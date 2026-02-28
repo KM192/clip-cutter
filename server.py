@@ -102,7 +102,7 @@ def ensure_h264_preview(folder, filename):
         print(f'  Transcoding HEVC→H264: {filename}...', flush=True)
         cmd = [
             FFMPEG, '-y', '-i', source,
-            '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+            *_video_enc_args(23),
             '-c:a', 'aac', '-b:a', '128k',
             preview_path,
         ]
@@ -273,6 +273,49 @@ def save_selections(folder, selections, title='', subtitle=''):
     except Exception as e:
         print(f'Save selections error: {e}')
 
+# ─── GPU / encoder helpers ────────────────────────────────────────────────────
+
+def _video_enc_args(crf=18):
+    """Return FFmpeg video-encoder argument list.
+
+    Uses GPU encoder (NVENC / AMF / QSV) when one was detected at startup,
+    otherwise falls back to libx264 (CPU).  The quality parameter maps to:
+      libx264  → -crf  (lower = better quality)
+      NVENC    → -cq   (lower = better quality, VBR mode)
+      AMF      → -qp_i / -qp_p
+      QSV      → -global_quality (ICQ mode)
+    """
+    tail = ['-pix_fmt', 'yuv420p', '-profile:v', 'high']
+    if GPU_ENCODER == 'h264_nvenc':
+        return ['-c:v', 'h264_nvenc', '-preset', 'p4',
+                '-rc', 'vbr', '-cq', str(crf), '-b:v', '0'] + tail
+    if GPU_ENCODER == 'h264_amf':
+        return ['-c:v', 'h264_amf', '-quality', 'speed',
+                '-qp_i', str(crf), '-qp_p', str(crf + 2)] + tail
+    if GPU_ENCODER == 'h264_qsv':
+        return ['-c:v', 'h264_qsv', '-preset', 'fast',
+                '-global_quality', str(crf)] + tail
+    # CPU fallback
+    return ['-c:v', 'libx264', '-preset', 'fast', '-crf', str(crf)] + tail
+
+
+def _detect_gpu_encoder():
+    """Probe for a working hardware H.264 encoder and return its name, or None."""
+    rc, out, _ = run_cmd([FFMPEG, '-encoders'], timeout=5)
+    for enc in ('h264_nvenc', 'h264_amf', 'h264_qsv'):
+        if enc.encode() not in out:
+            continue
+        # Verify the encoder actually works (GPU driver may be absent even if listed)
+        rc, _, _ = run_cmd([
+            FFMPEG, '-y',
+            '-f', 'lavfi', '-i', 'color=black:s=64x64:r=1',
+            '-t', '0.1', '-c:v', enc, '-f', 'null', '-',
+        ], timeout=10)
+        if rc == 0:
+            return enc
+    return None
+
+
 # ─── Title/End card helpers ───────────────────────────────────────────────────
 
 def esc_drawtext(s):
@@ -363,7 +406,7 @@ def generate_title_card(title, subtitle, out_path):
         '-t', '4',
         '-vf', ','.join(vf_parts),
         '-map', '0:v', '-map', '1:a',
-        '-c:v', 'libx264', '-preset', 'fast', '-crf', '18', '-pix_fmt', 'yuv420p', '-profile:v', 'high',
+        *_video_enc_args(18),
         '-c:a', 'aac', '-b:a', '128k', '-ar', '44100', '-ac', '2',
         out_path,
     ]
@@ -392,7 +435,7 @@ def generate_end_card(out_path):
         '-t', '5',
         '-vf', vf,
         '-map', '0:v', '-map', '1:a',
-        '-c:v', 'libx264', '-preset', 'fast', '-crf', '18', '-pix_fmt', 'yuv420p', '-profile:v', 'high',
+        *_video_enc_args(18),
         '-c:a', 'aac', '-b:a', '128k', '-ar', '44100', '-ac', '2',
         out_path,
     ]
@@ -439,7 +482,7 @@ def generate_day_card(date_str, day_name, out_path):
         '-t', '2',
         '-vf', ','.join(vf_parts),
         '-map', '0:v', '-map', '1:a',
-        '-c:v', 'libx264', '-preset', 'fast', '-crf', '18', '-pix_fmt', 'yuv420p', '-profile:v', 'high',
+        *_video_enc_args(18),
         '-c:a', 'aac', '-b:a', '128k', '-ar', '44100', '-ac', '2',
         out_path,
     ]
@@ -600,7 +643,7 @@ def export_worker(folder, clips, selections, out_name, title='', subtitle='', mu
                 '-ss', str(start),
                 '-i', inp,
                 '-t', '3',
-                '-c:v', 'libx264', '-preset', 'fast', '-crf', '18', '-pix_fmt', 'yuv420p', '-profile:v', 'high',
+                *_video_enc_args(18),
                 '-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709', '-color_range', '1',
                 '-c:a', 'aac', '-b:a', '192k', '-ar', '44100', '-ac', '2',
                 '-vf', vf,
@@ -1112,9 +1155,10 @@ class Handler(BaseHTTPRequestHandler):
 # ─── Entry point ──────────────────────────────────────────────────────────────
 
 FFMPEG_HAS_ZSCALE = False  # set by check_ffmpeg()
+GPU_ENCODER = None          # set by check_ffmpeg(); 'h264_nvenc' | 'h264_amf' | 'h264_qsv' | None
 
 def check_ffmpeg():
-    global FFMPEG_HAS_ZSCALE
+    global FFMPEG_HAS_ZSCALE, GPU_ENCODER
     for tool, path in (('ffmpeg', FFMPEG), ('ffprobe', FFPROBE)):
         try:
             rc, _, _ = run_cmd([path, '-version'], timeout=5)
@@ -1129,6 +1173,10 @@ def check_ffmpeg():
     rc, out, _ = run_cmd([FFMPEG, '-filters'], timeout=5)
     FFMPEG_HAS_ZSCALE = b'zscale' in out
     print(f'HDR tone-mapping (zscale): {"yes" if FFMPEG_HAS_ZSCALE else "no (colorspace fallback)"}')
+    # Detect GPU encoder (NVENC / AMF / QSV)
+    GPU_ENCODER = _detect_gpu_encoder()
+    label = GPU_ENCODER if GPU_ENCODER else 'libx264 (CPU)'
+    print(f'Video encoder: {label}')
 
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):

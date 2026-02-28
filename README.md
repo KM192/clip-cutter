@@ -102,6 +102,29 @@ The cache is automatically invalidated when:
 
 Use the **🗑 clear cache** button in the UI to force full regeneration.
 
+## GPU acceleration
+
+The server automatically detects a hardware H.264 encoder at startup and uses it for all encoding operations (clip cutting, HEVC preview transcoding, and card generation).
+
+| GPU | Encoder used | Equivalent quality flag |
+|-----|-------------|------------------------|
+| NVIDIA (Turing+) | `h264_nvenc` | `-cq` (VBR mode) |
+| AMD | `h264_amf` | `-qp_i / -qp_p` |
+| Intel | `h264_qsv` | `-global_quality` (ICQ) |
+| *(none detected)* | `libx264` (CPU) | `-crf` |
+
+The startup log shows which encoder is active:
+
+```
+Video encoder: h264_nvenc
+```
+
+**Requirements for GPU encoding:**
+- An FFmpeg build that includes the encoder (`ffmpeg -encoders | grep h264`). Builds from [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) include NVENC and AMF on Windows.
+- The matching GPU driver must be installed. If the driver is absent the encoder silently falls back to CPU.
+
+**Note:** Video filters (`drawtext`, `scale`, `colorspace`, `zscale`) run on the CPU regardless of the encoder. The GPU only accelerates the encoding step itself, which is still a significant speedup for the clip cutting loop.
+
 ## HDR / HEVC support
 
 ### HEVC preview
@@ -168,7 +191,7 @@ Saved automatically after each decision and loaded when the folder is reopened.
     output/final_YYYYMMDD_HHmmss.mp4
 ```
 
-Each shot is normalised to 1080×1920, 30 fps, H.264 High, yuv420p, BT.709 — identical parameters across all segments allow lossless stream concat.
+Each shot is normalised to 1080×1920, 30 fps, H.264 High, yuv420p, BT.709 — identical parameters across all segments allow lossless stream concat. Encoding uses GPU acceleration when available (see [GPU acceleration](#gpu-acceleration)).
 
 ## License
 
