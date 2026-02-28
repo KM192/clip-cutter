@@ -42,11 +42,12 @@ FFPROBE = _find_tool('ffprobe')
 state_lock = threading.Lock()
 state = {
     'folder': None,
-    'clips': [],        # [{id, filename, duration, modified}]
-    'selections': {},   # filename -> {filename, start_time, enabled}
+    'clips': [],               # [{id, filename, duration, modified, width, height}]
+    'selections': {},          # filename -> {filename, start_time, enabled}
     'title': '',
     'subtitle': '',
-    'music': [],        # [{filename, duration}]
+    'music': [],               # [{filename, duration}]
+    'disabled_day_cards': set(),  # set of date strings 'YYYY-MM-DD'
 }
 
 export_lock = threading.Lock()
@@ -132,7 +133,7 @@ def run_cmd(cmd, timeout=60, cwd=None):
 
 
 def ffprobe_info(path):
-    """Returns (duration, video_codec_name). video_codec_name may be None."""
+    """Returns (duration, video_codec_name, width, height). video_codec_name may be None."""
     try:
         rc, out, _ = run_cmd(
             [FFPROBE, '-v', 'quiet', '-print_format', 'json',
@@ -143,19 +144,40 @@ def ffprobe_info(path):
             d = json.loads(out)
             codec = None
             duration = 0.0
+            width = 0
+            height = 0
             for s in d.get('streams', []):
                 if s.get('codec_type') == 'video':
                     codec = s.get('codec_name', '').lower() or None
+                    width  = s.get('width',  0)
+                    height = s.get('height', 0)
+                    # Swap for 90°/270° rotation (phone portrait videos stored as landscape).
+                    # Newer ffprobe: rotation in side_data_list; older: tags.rotate.
+                    rotate = 0
+                    for sd in s.get('side_data_list', []):
+                        if 'rotation' in sd:
+                            try:
+                                rotate = int(sd['rotation']) % 360
+                            except (ValueError, TypeError):
+                                pass
+                            break
+                    if not rotate:
+                        try:
+                            rotate = int(s.get('tags', {}).get('rotate', 0) or 0) % 360
+                        except (ValueError, TypeError):
+                            rotate = 0
+                    if rotate in (90, 270):
+                        width, height = height, width
                     if 'duration' in s:
                         duration = float(s['duration'])
             if not duration:
                 fmt_dur = d.get('format', {}).get('duration')
                 if fmt_dur:
                     duration = float(fmt_dur)
-            return duration, codec
+            return duration, codec, width, height
     except Exception as e:
         print(f'  ffprobe error for {os.path.basename(path)}: {e}')
-    return 0.0, None
+    return 0.0, None, 0, 0
 
 
 def scan_folder(folder):
@@ -177,7 +199,7 @@ def scan_folder(folder):
     for i, (mtime, _, name) in enumerate(entries):
         path = os.path.join(folder, name)
         print(f'  [{i+1}/{n}] {name} ...', end='', flush=True)
-        dur, codec = ffprobe_info(path)
+        dur, codec, w, h = ffprobe_info(path)
         tag = f' [{codec}]' if codec else ''
         print(f' {dur:.1f}s{tag}')
         clips.append({
@@ -186,6 +208,8 @@ def scan_folder(folder):
             'duration': round(dur, 3),
             'codec': codec or '',
             'modified': datetime.datetime.fromtimestamp(mtime).isoformat(),
+            'width':  w,
+            'height': h,
         })
     return clips
 
@@ -203,7 +227,7 @@ def scan_music(folder):
         return []
     for name in names:
         path = os.path.join(music_dir, name)
-        dur, _ = ffprobe_info(path)
+        dur, _, _, _ = ffprobe_info(path)
         tracks.append({'filename': name, 'duration': round(dur, 3)})
         print(f'  Music: {name} ({dur:.1f}s)')
     return tracks
@@ -243,7 +267,7 @@ DAYS_PL = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', '
 
 
 def load_selections(folder):
-    """Returns (selections_dict, title, subtitle)."""
+    """Returns (selections_dict, title, subtitle, disabled_day_cards)."""
     path = os.path.join(folder, 'selections.json')
     if os.path.isfile(path):
         try:
@@ -251,13 +275,14 @@ def load_selections(folder):
                 data = json.load(f)
             if data.get('source_folder') == folder:
                 sel = {s['filename']: s for s in data.get('selections', [])}
-                return sel, data.get('title', ''), data.get('subtitle', '')
+                disabled = set(data.get('disabled_day_cards', []))
+                return sel, data.get('title', ''), data.get('subtitle', ''), disabled
         except Exception as e:
             print(f'Load selections error: {e}')
-    return {}, '', ''
+    return {}, '', '', set()
 
 
-def save_selections(folder, selections, title='', subtitle=''):
+def save_selections(folder, selections, title='', subtitle='', disabled_day_cards=None):
     path = os.path.join(folder, 'selections.json')
     data = {
         'source_folder': folder,
@@ -266,6 +291,7 @@ def save_selections(folder, selections, title='', subtitle=''):
         'title': title,
         'subtitle': subtitle,
         'selections': list(selections.values()),
+        'disabled_day_cards': sorted(disabled_day_cards or []),
     }
     try:
         with open(path, 'w', encoding='utf-8') as f:
@@ -414,6 +440,10 @@ def generate_title_card(title, subtitle, out_path):
     if rc != 0:
         print('WARN: Error generating intro card:', err.decode('utf-8', errors='replace')[-600:])
         return None
+    # Extract first frame as thumbnail for UI preview
+    thumb = out_path.replace('.mp4', '_thumb.jpg')
+    run_cmd([FFMPEG, '-y', '-ss', '0', '-i', out_path,
+             '-vframes', '1', '-q:v', '3', thumb], timeout=15)
     return out_path
 
 
@@ -502,7 +532,7 @@ def _add_music_to_video(folder, video_path, out_path, music_tracks):
         return None
 
     music_dir = os.path.join(folder, 'music')
-    video_dur, _ = ffprobe_info(video_path)
+    video_dur, _, _, _ = ffprobe_info(video_path)
     if not video_dur:
         print('WARN: Cannot read video duration – skipping music')
         return None
@@ -551,9 +581,41 @@ def _add_music_to_video(folder, video_path, out_path, music_tracks):
     return out_path
 
 
+def _embed_mp4_thumbnail(video_path, thumb_path):
+    """Embed thumb_path as cover art (attached_pic) inside video_path, in-place."""
+    temp = video_path + '._thumb_tmp.mp4'
+    cmd = [
+        FFMPEG, '-y',
+        '-i', video_path,
+        '-i', thumb_path,
+        '-map', '0',
+        '-map', '1',
+        '-c', 'copy',
+        '-c:v:1', 'mjpeg',
+        '-disposition:v:1', 'attached_pic',
+        temp,
+    ]
+    rc, _, err = run_cmd(cmd, timeout=120)
+    if rc == 0:
+        try:
+            os.replace(temp, video_path)
+        except Exception as e:
+            print(f'WARN: Could not replace file after thumbnail embed: {e}')
+            try:
+                os.remove(temp)
+            except Exception:
+                pass
+    else:
+        print('WARN: Could not embed thumbnail:', err.decode('utf-8', errors='replace')[-200:])
+        try:
+            os.remove(temp)
+        except Exception:
+            pass
+
+
 # ─── Export ───────────────────────────────────────────────────────────────────
 
-def export_worker(folder, clips, selections, out_name, title='', subtitle='', music_tracks=None, include_day_cards=True):
+def export_worker(folder, clips, selections, out_name, title='', subtitle='', music_tracks=None, include_day_cards=True, disabled_day_cards=None):
     global export_status
 
     def set_status(s, msg, pct, output=None):
@@ -668,10 +730,14 @@ def export_worker(folder, clips, selections, out_name, title='', subtitle='', mu
         end_file = generate_end_card(end_cache)
 
     # Day separator cards — one per unique day in chronological order
+    _disabled = disabled_day_cards or set()
     day_files = {}  # date_str -> path or None
     if include_day_cards:
         for (day, _) in cut_clips:
             if day and day not in day_files:
+                if day in _disabled:
+                    day_files[day] = None  # explicitly disabled by user
+                    continue
                 day_cache = _day_card_cache_path(folder, day)
                 if os.path.isfile(day_cache):
                     print(f'  [cache] day card {day}')
@@ -717,9 +783,61 @@ def export_worker(folder, clips, selections, out_name, title='', subtitle='', mu
     out_path    = os.path.join(out_dir, out_name)
     concat_path = os.path.join(temp_dir, 'concat_out.mp4') if has_music else out_path
 
-    set_status('working', 'Merging clips...', 86)
-    cmd = [FFMPEG, '-y', '-f', 'concat', '-safe', '0', '-i', flist, '-c', 'copy', concat_path]
-    rc, _, err = run_cmd(cmd, timeout=300)
+    # Estimate total duration so we can track merge progress
+    day_file_set = {v for v in day_files.values() if v}
+    total_merge_dur = sum(
+        4.0 if f == title_file else
+        5.0 if f == end_file    else
+        2.0 if f in day_file_set else
+        3.0
+        for f in concat_list
+    )
+
+    set_status('working', f'Merging {len(concat_list)} segments...', 86)
+    merge_cmd = [FFMPEG, '-y', '-f', 'concat', '-safe', '0', '-i', flist,
+                 '-c', 'copy', '-progress', 'pipe:1', '-nostats', concat_path]
+    merge_kw = dict(stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if IS_WIN:
+        merge_kw['creationflags'] = _NO_WINDOW
+
+    proc = subprocess.Popen(merge_cmd, **merge_kw)
+
+    # Drain stderr in background to prevent pipe deadlock
+    stderr_buf = []
+    def _drain():
+        try:
+            for chunk in iter(lambda: proc.stderr.read(4096), b''):
+                stderr_buf.append(chunk)
+        except Exception:
+            pass
+    t_err = threading.Thread(target=_drain, daemon=True)
+    t_err.start()
+
+    try:
+        for raw in proc.stdout:
+            line = raw.decode('utf-8', errors='replace').strip()
+            if line.startswith('out_time_ms='):
+                try:
+                    us = int(line.split('=', 1)[1])
+                    if total_merge_dur > 0 and us > 0:
+                        frac = min(us / 1_000_000 / total_merge_dur, 1.0)
+                        pct  = int(86 + frac * 6)   # 86 → 92
+                        set_status('working',
+                                   f'Merging {len(concat_list)} segments... {int(frac * 100)}%',
+                                   pct)
+                except (ValueError, IndexError):
+                    pass
+    except Exception as e:
+        proc.kill()
+        proc.wait()
+        set_status('error', f'Merging error: {e}', 0)
+        return
+    finally:
+        proc.stdout.close()
+        t_err.join(timeout=5)
+
+    rc = proc.wait(timeout=3600)
+    err = b''.join(stderr_buf)
     if rc != 0:
         msg = err.decode('utf-8', errors='replace')[-400:]
         set_status('error', f'Merging error: {msg}', 0)
@@ -741,8 +859,15 @@ def export_worker(folder, clips, selections, out_name, title='', subtitle='', mu
                 pass
             print('WARN: Music was not added – film saved without music')
 
+    # Embed title card thumbnail as cover art so Windows Explorer shows it
+    if title_file:
+        thumb_path = title_file.replace('.mp4', '_thumb.jpg')
+        if os.path.isfile(thumb_path):
+            set_status('working', 'Embedding thumbnail...', 94)
+            _embed_mp4_thumbnail(out_path, thumb_path)
+
     # Cleanup — only temp dir (clips live in .clip_cache/, not in temp)
-    set_status('working', 'Cleanup...', 95)
+    set_status('working', 'Cleanup...', 96)
     try:
         os.remove(flist)
         os.rmdir(temp_dir)
@@ -762,6 +887,8 @@ class Handler(BaseHTTPRequestHandler):
         ('GET',  '/index.html'),
         ('POST', '/api/session'),
     })
+    # Path prefixes that don't require session (browser-native fetches)
+    _OPEN_PREFIXES = ('/api/video/', '/api/output/', '/api/frame/')
 
     def log_message(self, fmt, *args):
         pass  # silence access log
@@ -781,7 +908,7 @@ class Handler(BaseHTTPRequestHandler):
             return True
         # Video/output files are fetched by the browser's native <video> element
         # which cannot add custom headers – allow these without session check.
-        if method == 'GET' and (path.startswith('/api/video/') or path.startswith('/api/output/')):
+        if method == 'GET' and any(path.startswith(p) for p in self._OPEN_PREFIXES):
             return True
         with _session_lock:
             if _session['id'] is None:
@@ -835,7 +962,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({'clips': state['clips']})
         elif path == '/api/selections':
             with state_lock:
-                self.send_json({'selections': state['selections']})
+                self.send_json({
+                    'selections': state['selections'],
+                    'disabled_day_cards': list(state['disabled_day_cards']),
+                })
         elif path == '/api/preview_status':
             with state_lock:
                 clips = list(state['clips'])
@@ -862,6 +992,40 @@ class Handler(BaseHTTPRequestHandler):
         elif path == '/api/export/status':
             with export_lock:
                 self.send_json(dict(export_status))
+        elif path == '/api/title_thumbnail':
+            with state_lock:
+                folder   = state['folder']
+                title    = state['title']
+                subtitle = state['subtitle']
+            if not folder or not title:
+                self.send_error(404, 'No title card')
+                return
+            title_cache = _title_card_cache_path(folder, title, subtitle)
+            thumb_path  = title_cache.replace('.mp4', '_thumb.jpg')
+            if not os.path.isfile(thumb_path):
+                self.send_error(404, 'Thumbnail not ready')
+                return
+            with open(thumb_path, 'rb') as f:
+                body = f.read()
+            self.send_response(200)
+            self.send_header('Content-Type', 'image/jpeg')
+            self.send_header('Content-Length', len(body))
+            self.send_header('Cache-Control', 'public, max-age=30')
+            self.end_headers()
+            self.wfile.write(body)
+        elif path.startswith('/api/frame/'):
+            filename = unquote(path[len('/api/frame/'):])
+            qs = urlparse(self.path).query
+            t = 0.0
+            cs = -1.0  # cache_start: if >=0 try to use pre-cut clip cache
+            for part in qs.split('&'):
+                if part.startswith('t='):
+                    try: t = float(part[2:])
+                    except Exception: pass
+                elif part.startswith('cs='):
+                    try: cs = float(part[3:])
+                    except Exception: pass
+            self._serve_frame(filename, t, cs)
         elif path.startswith('/api/video/'):
             filename = unquote(path[len('/api/video/'):])
             self._serve_video(filename)
@@ -897,15 +1061,16 @@ class Handler(BaseHTTPRequestHandler):
             if not clips:
                 self.send_json({'error': 'No MP4 files found in folder'}, 400)
                 return
-            sel, title, subtitle = load_selections(folder)
+            sel, title, subtitle, disabled_days = load_selections(folder)
             music = scan_music(folder)
             with state_lock:
-                state['folder']    = folder
-                state['clips']     = clips
-                state['selections'] = sel
-                state['title']     = title
-                state['subtitle']  = subtitle
-                state['music']     = music
+                state['folder']             = folder
+                state['clips']              = clips
+                state['selections']         = sel
+                state['title']              = title
+                state['subtitle']           = subtitle
+                state['music']              = music
+                state['disabled_day_cards'] = disabled_days
             print(f'Loaded {len(clips)} clips, {len(sel)} saved decisions, {len(music)} tracks')
             threading.Thread(target=pregenerate_hevc_previews, args=(folder, clips), daemon=True).start()
             self.send_json({'ok': True, 'count': len(clips)})
@@ -947,10 +1112,11 @@ class Handler(BaseHTTPRequestHandler):
                 if not state['folder']:
                     self.send_json({'error': 'No folder loaded'}, 400)
                     return
-                folder = state['folder']
-                clips  = list(state['clips'])
-                sel    = dict(state['selections'])
-                music  = list(state['music'])
+                folder        = state['folder']
+                clips         = list(state['clips'])
+                sel           = dict(state['selections'])
+                music         = list(state['music'])
+                disabled_days = set(state['disabled_day_cards'])
 
             with export_lock:
                 if export_status['status'] == 'working':
@@ -963,17 +1129,45 @@ class Handler(BaseHTTPRequestHandler):
             if not out_name.lower().endswith('.mp4'):
                 out_name += '.mp4'
 
-            title            = data.get('title', '').strip()
-            subtitle         = data.get('subtitle', '').strip()
+            title             = data.get('title', '').strip()
+            subtitle          = data.get('subtitle', '').strip()
             include_day_cards = bool(data.get('include_day_cards', True))
 
             t = threading.Thread(
                 target=export_worker,
-                args=(folder, clips, sel, out_name, title, subtitle, music, include_day_cards),
+                args=(folder, clips, sel, out_name, title, subtitle, music, include_day_cards, disabled_days),
                 daemon=True,
             )
             t.start()
             self.send_json({'ok': True, 'output': out_name})
+
+        elif path == '/api/shutdown':
+            self.send_json({'ok': True})
+            def _quit():
+                import time as _time
+                _time.sleep(0.4)
+                os._exit(0)
+            threading.Thread(target=_quit, daemon=True).start()
+
+        elif path == '/api/day_card_toggle':
+            date_str = data.get('date', '').strip()
+            enabled  = bool(data.get('enabled', True))
+            if not date_str:
+                self.send_json({'error': 'Missing date'}, 400)
+                return
+            with state_lock:
+                if enabled:
+                    state['disabled_day_cards'].discard(date_str)
+                else:
+                    state['disabled_day_cards'].add(date_str)
+                folder   = state['folder']
+                sel_copy = dict(state['selections'])
+                title    = state['title']
+                subtitle = state['subtitle']
+                disabled = list(state['disabled_day_cards'])
+            if folder:
+                save_selections(folder, sel_copy, title, subtitle, disabled)
+            self.send_json({'ok': True})
 
         elif path == '/api/clear-cache':
             with state_lock:
@@ -999,6 +1193,58 @@ class Handler(BaseHTTPRequestHandler):
 
         else:
             self.send_json({'error': 'Not found'}, 404)
+
+    def _serve_frame(self, filename, t, cache_start=-1.0):
+        """Extract a single JPEG frame at time t from a clip and return it."""
+        with state_lock:
+            folder = state['folder']
+            clips  = state['clips']
+        if not folder:
+            self.send_error(404, 'No folder loaded')
+            return
+        filename = os.path.basename(filename)
+        fpath = os.path.join(folder, filename)
+        if not os.path.isfile(fpath):
+            self.send_error(404, 'Video not found')
+            return
+
+        # Prefer the pre-cut clip cache — it's a short H.264 file, seek is instant
+        if cache_start >= 0:
+            cache_path = _clip_cache_path(folder, filename, cache_start)
+            if os.path.isfile(cache_path):
+                fpath = cache_path
+                t = max(0.0, min(t - cache_start, 2.967))
+        else:
+            # Fall back: use H.264 preview for HEVC clips
+            codec = next((c.get('codec', '') for c in clips if c['filename'] == filename), '')
+            if codec in ('hevc', 'h265'):
+                with _preview_lock:
+                    preview = _preview_cache.get(filename)
+                if preview and os.path.isfile(preview):
+                    fpath = preview
+
+        kwargs = {}
+        if IS_WIN:
+            kwargs['creationflags'] = _NO_WINDOW
+        try:
+            cmd = [FFMPEG, '-y', '-ss', f'{t:.3f}', '-i', fpath,
+                   '-vframes', '1', '-an', '-vf', 'scale=540:960',
+                   '-f', 'image2', '-vcodec', 'mjpeg', '-q:v', '4', 'pipe:1']
+            r = subprocess.run(cmd, capture_output=True, timeout=10, **kwargs)
+            if r.returncode == 0 and r.stdout:
+                self.send_response(200)
+                self.send_header('Content-Type', 'image/jpeg')
+                self.send_header('Content-Length', len(r.stdout))
+                self.send_header('Cache-Control', 'public, max-age=60')
+                self.end_headers()
+                self.wfile.write(r.stdout)
+                return
+        except Exception:
+            pass
+        try:
+            self.send_error(500, 'Frame extraction failed')
+        except (ConnectionAbortedError, BrokenPipeError, ConnectionResetError):
+            pass
 
     def _serve_static(self, name):
         fpath = os.path.join(SCRIPT_DIR, name)
@@ -1038,7 +1284,7 @@ class Handler(BaseHTTPRequestHandler):
         codec = next((c.get('codec', '') for c in clips if c['filename'] == filename), '')
         if not codec:
             # Codec not in clip list (e.g. fresh scan without codec field) – detect now
-            _, codec = ffprobe_info(fpath)
+            _, codec, _, _ = ffprobe_info(fpath)
             codec = codec or ''
         if codec in ('hevc', 'h265'):
             preview = ensure_h264_preview(folder, filename)
@@ -1197,15 +1443,16 @@ def main():
         if not clips:
             print(f'ERROR: No MP4 files in: {folder}')
             sys.exit(1)
-        sel, title, subtitle = load_selections(folder)
+        sel, title, subtitle, disabled_days = load_selections(folder)
         music = scan_music(folder)
         with state_lock:
-            state['folder']    = folder
-            state['clips']     = clips
-            state['selections'] = sel
-            state['title']     = title
-            state['subtitle']  = subtitle
-            state['music']     = music
+            state['folder']             = folder
+            state['clips']              = clips
+            state['selections']         = sel
+            state['title']              = title
+            state['subtitle']           = subtitle
+            state['music']              = music
+            state['disabled_day_cards'] = disabled_days
         print(f'Loaded {len(clips)} clips, {len(music)} tracks')
         threading.Thread(target=pregenerate_hevc_previews, args=(folder, clips), daemon=True).start()
 

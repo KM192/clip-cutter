@@ -193,6 +193,31 @@ Saved automatically after each decision and loaded when the folder is reopened.
 
 Each shot is normalised to 1080×1920, 30 fps, H.264 High, yuv420p, BT.709 — identical parameters across all segments allow lossless stream concat. Encoding uses GPU acceleration when available (see [GPU acceleration](#gpu-acceleration)).
 
+## TO DO
+
+Done:
+
+- set the first frame of title card as a preview / thumbnall of etire movie
+- including / excluding a day card does not change the duration (rectangle width) of the songs as it should while the final movie is longer / shorter . check if they are included in all calculation of music duration, fade outs etc. 
+- a buttom to close the application - it would end also the server 
+- if all clips are skips in the given date -> do not generate a day card clip. it can happend that even the first several days are skipped becouse all clicps are skipped
+- generation of preview should also use GPU if possible
+- when displaying teh clip or choosing the mark start - display a first frame of selected fragment on the left side of the clip and the last one on the right side of the clip - add a checkbox next to autoplay calles frames preview to steer of this function
+- disabling a day cards should be shown as skipped (red), enabling as green, possibility to skip/enable a selected oen day card - then a chackbox shoud have a third state (gray?) - checked but not all
+- warning on diffirent clip size or orinetaion then entire movie
+
+Next:
+
+- changing the default title and  subtitle for date clips - so instead of date or day of week (default) user can add the name of the visited city or region (plus remembering it in selection) - e.g. by clicking the clip. have the same method to change the start clip title and subtitle
+
+
+For later:
+
+- stopping the movie generation from GUI
+- changeing the default clip duration (3 sec) - somewhere close to duplicate button , remembering per clip stop time - also in selection.json
+- choosing the output movie size format with default as first clip (use some standard common sizes) 
+- changing manually the clip place (remembering this relative changes as exception to general rule e.g - selected clip after another clip - so that if new clips would be added to the folder they would apprear in proprer order witch this exceptions)
+
 ## License
 
 MIT

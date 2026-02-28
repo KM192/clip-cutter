@@ -590,6 +590,62 @@
       display: block;
       pointer-events: none;
     }
+
+    /* ── Frame preview panels ─────────────────────────────────── */
+    .frame-preview-panel {
+      height: 50%;
+      aspect-ratio: 9 / 16;
+      flex-shrink: 0;
+      align-self: center;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      background: #000;
+      overflow: hidden;
+    }
+    .frame-preview-panel .fp-label {
+      flex-shrink: 0;
+      width: 100%;
+      text-align: center;
+      font-size: 9px;
+      color: rgba(255,255,255,.5);
+      padding: 3px 0;
+      pointer-events: none;
+    }
+    .frame-preview-panel img {
+      flex: 1;
+      min-height: 0;
+      width: 100%;
+      object-fit: contain;
+      display: block;
+    }
+    #frame-preview-left  { border-right: 1px solid var(--border); margin-right: 12px; }
+    #frame-preview-right { border-left:  1px solid var(--border); margin-left:  12px; }
+
+    /* ── Day card tile states ─────────────────────────────────── */
+    .q-card-day.day-disabled {
+      border-color: var(--red);
+      background: rgba(224,80,80,.15);
+      color: var(--red);
+      opacity: 0.75;
+    }
+    .q-card-day { cursor: pointer; }
+    .q-card-day:hover { filter: brightness(1.3); }
+
+    /* ── Clip size warning ────────────────────────────────────── */
+    #size-warning {
+      display: none;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 10px;
+      background: rgba(224,144,48,.12);
+      border-top: 1px solid rgba(224,144,48,.3);
+      font-size: 11px;
+      color: var(--orange);
+      flex-shrink: 0;
+    }
+    #size-warning.show { display: flex; }
   </style>
 </head>
 <body>
@@ -652,6 +708,9 @@
     <button class="btn" id="next-btn" onclick="goToClip(state.current + 1)" title="PageDown">
       Next &raquo;
     </button>
+    <button class="btn btn-red" onclick="shutdownApp()" title="Close application and stop server" style="margin-left:8px;font-size:11px;padding:4px 10px">
+      &#10005; Close
+    </button>
   </div>
 
   <!-- Main content -->
@@ -659,6 +718,10 @@
 
     <!-- Video -->
     <div id="video-area">
+      <div class="frame-preview-panel" id="frame-preview-left" style="display:none">
+        <span class="fp-label">first frame</span>
+        <img id="fp-first" src="" alt="">
+      </div>
       <div id="video-wrap">
         <video id="video" preload="metadata"></video>
         <div id="clip-badge"></div>
@@ -667,6 +730,15 @@
           <div id="video-wait-msg">Generating preview...</div>
         </div>
       </div>
+      <div class="frame-preview-panel" id="frame-preview-right" style="display:none">
+        <span class="fp-label">last frame</span>
+        <img id="fp-last" src="" alt="">
+      </div>
+    </div>
+
+    <!-- Clip size warning -->
+    <div id="size-warning">
+      &#9888; <span id="size-warning-msg"></span>
     </div>
 
     <!-- Bottom panel -->
@@ -698,6 +770,11 @@
                style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:11px;color:var(--dim);user-select:none;white-space:nowrap;padding:0 4px">
           <input type="checkbox" id="autoplay-cb" style="margin:0;cursor:pointer">
           auto&#9654;
+        </label>
+        <label id="frames-preview-label" title="Show first and last frame of selected fragment"
+               style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:11px;color:var(--dim);user-select:none;white-space:nowrap;padding:0 4px">
+          <input type="checkbox" id="frames-preview-cb" style="margin:0;cursor:pointer">
+          frames preview
         </label>
         <button class="btn" id="kb-toggle" onclick="toggleKbHelp()" title="Keyboard shortcuts" style="color:var(--dim)">
           &#9000; keys
@@ -746,7 +823,7 @@
           <div id="music-scroll"></div>
         </div>
         <div id="queue-footer">
-          <div id="stats">Selected: <strong id="stat-count">0</strong> clips ~<strong id="stat-dur">0</strong>s</div>
+          <div id="stats">Selected: <strong id="stat-count">0</strong> clips ~<strong id="stat-dur">0</strong>s clips | movie ~<strong id="stat-total-dur">0</strong>s</div>
           <input type="text" id="film-title" placeholder="Title..." maxlength="60" autocomplete="off">
           <input type="text" id="film-subtitle" placeholder="Subtitle..." maxlength="80" autocomplete="off">
           <div id="export-section">
@@ -787,19 +864,20 @@
 // ── State ─────────────────────────────────────────────────────────────────────
 const state = {
   clips: [],
-  selections: {},      // filename -> {filename, start_time, enabled, extra_starts:[]}
-  previewStatus: {},   // filename -> 'ready'|'working'|'pending'|'error'
+  selections: {},           // filename -> {filename, start_time, enabled, extra_starts:[]}
+  previewStatus: {},        // filename -> 'ready'|'working'|'pending'|'error'
+  disabledDayCards: new Set(), // set of 'YYYY-MM-DD' strings
   current: 0,
-  markSlots: [null],   // array of start times; null = not marked (use 0.0)
-  activeSlot: 0,       // which slot S-key will update
+  markSlots: [null],        // array of start times; null = not marked (use 0.0)
+  activeSlot: 0,            // which slot S-key will update
   exportPolling: null,
   folder: '',
   projectTitle: '',
   projectSubtitle: '',
   lastExportName: '',
   exportStartTime: null,
-  etaSamples: [],      // [{t, pct}] sliding window for ETA rate calculation
-  musicTracks: [],     // [{filename, duration}] from folder/music/*.mp3
+  etaSamples: [],           // [{t, pct}] sliding window for ETA rate calculation
+  musicTracks: [],          // [{filename, duration}] from folder/music/*.mp3
 };
 
 // ── Session ───────────────────────────────────────────────────────────────────
@@ -907,9 +985,10 @@ async function loadClipsFromServer() {
     api('GET', '/api/selections'),
     api('GET', '/api/music'),
   ]);
-  state.clips       = clipsData.clips   || [];
-  state.selections  = selData.selections || {};
-  state.musicTracks = musicData.tracks  || [];
+  state.clips            = clipsData.clips    || [];
+  state.selections       = selData.selections  || {};
+  state.disabledDayCards = new Set(selData.disabled_day_cards || []);
+  state.musicTracks      = musicData.tracks   || [];
 }
 
 async function showApp() {
@@ -920,6 +999,7 @@ async function showApp() {
   el('film-subtitle').value = state.projectSubtitle;
   el('nav-folder').textContent = state.folder ? '\uD83D\uDCC2 ' + state.folder : '';
   bindAutoplay();
+  bindFramesPreview();
   bindDayCards();   // must run before renderQueue so checkbox state is set
   renderQueue();
   renderMusicBar();
@@ -1099,6 +1179,8 @@ function goToClip(idx) {
   state.current = idx;
   const clip = state.clips[idx];
 
+  checkClipSize(clip);
+
   // Restore slots from previous decision
   const sel = state.selections[clip.filename];
   if (sel && sel.enabled) {
@@ -1107,6 +1189,9 @@ function goToClip(idx) {
     state.markSlots = [null];
   }
   state.activeSlot = 0;
+
+  // Kick off frame extraction immediately — doesn't need video metadata
+  updateFramePreviews();
 
   _fragmentAutoStop = false;  // reset; will be set in loadedmetadata if mark present
 
@@ -1150,6 +1235,7 @@ function updateNav() {
 function markStart() {
   state.markSlots[state.activeSlot] = el('video').currentTime;
   updateMarkInfo();
+  scheduleFramePreview(0);
 }
 
 function addSlot() {
@@ -1175,6 +1261,7 @@ function setActiveSlot(i) {
     if (el('autoplay-cb').checked) v.play().catch(() => {});
   }
   updateMarkInfo();
+  scheduleFramePreview(0);
 }
 
 function updateMarkInfo() {
@@ -1322,17 +1409,30 @@ function clipDay(clip) {
   return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
 }
 
+// Returns set of days that have at least one enabled clip
+function daysWithEnabledClips() {
+  const days = new Set();
+  state.clips.forEach(clip => {
+    const sel = state.selections[clip.filename];
+    if (sel && sel.enabled) days.add(clipDay(clip));
+  });
+  return days;
+}
+
 function buildQueueItems() {
-  const showDayCards = el('day-cards-cb') ? el('day-cards-cb').checked : true;
+  const showDayCards  = el('day-cards-cb') ? el('day-cards-cb').checked : true;
+  const enabledDays   = daysWithEnabledClips();
   const items = [{ type: 'intro' }];
-  let lastDay = null;
+  let lastDay    = null;
   let isFirstDay = true;
   state.clips.forEach((clip, i) => {
     const day = clipDay(clip);
     if (day && day !== lastDay) {
-      // Skip the first day card when a title card precedes the clips.
-      if (showDayCards && (!isFirstDay || !state.projectTitle)) {
-        items.push({ type: 'day', date: day });
+      // Only show day card if at least one clip on that day is enabled
+      const hasEnabled = enabledDays.has(day);
+      if (showDayCards && hasEnabled && (!isFirstDay || !state.projectTitle)) {
+        const disabled = state.disabledDayCards.has(day);
+        items.push({ type: 'day', date: day, dayDisabled: disabled });
       }
       lastDay = day;
       isFirstDay = false;
@@ -1377,16 +1477,26 @@ function renderQueue() {
       div.className = 'q-card q-card-intro' + (hasTitle ? ' has-title' : '');
       div.id    = 'q-card-intro';
       div.title = hasTitle ? `Intro card: ${state.projectTitle}` : 'Intro card (no title)';
-      div.innerHTML = '<span style="font-size:11px">&#9654;</span><span>INTRO</span>';
+      if (hasTitle) {
+        // Show thumbnail of title card first frame
+        const img = document.createElement('img');
+        img.src = '/api/title_thumbnail';
+        img.style.cssText = 'width:100%;height:100%;object-fit:cover;border-radius:3px;';
+        img.onerror = () => { img.style.display='none'; div.innerHTML += '<span style="font-size:11px">&#9654;</span><span>INTRO</span>'; };
+        div.appendChild(img);
+      } else {
+        div.innerHTML = '<span style="font-size:11px">&#9654;</span><span>INTRO</span>';
+      }
       container.appendChild(div);
 
     } else if (item.type === 'day') {
       const { top, bottom } = formatDayTile(item.date);
       const div = document.createElement('div');
-      div.className = 'q-card q-card-day';
+      div.className = 'q-card q-card-day' + (item.dayDisabled ? ' day-disabled' : '');
       div.id        = `q-card-day-${item.date}`;
-      div.title     = item.date;
+      div.title     = item.dayDisabled ? `Day ${item.date} – skipped (click to enable)` : `Day ${item.date} – click to skip`;
       div.innerHTML = `<span>${top}</span><span>${bottom}</span>`;
+      div.onclick   = () => toggleDayCard(item.date, item.dayDisabled);
       container.appendChild(div);
 
     } else if (item.type === 'end') {
@@ -1452,6 +1562,9 @@ function updateStats() {
   el('stat-dur').textContent   = (totalSlots * 3).toFixed(0);
   el('export-btn').disabled    = totalSlots === 0;
   updateMusicBar();
+  // totalVideoDuration is called inside updateMusicBar already, update text
+  const durEl = el('stat-total-dur');
+  if (durEl) durEl.textContent = totalVideoDuration().toFixed(0);
 }
 
 // ── Music bar ─────────────────────────────────────────────────────────────────
@@ -1488,17 +1601,40 @@ function renderMusicBar() {
   updateMusicBar();
 }
 
+function totalVideoDuration() {
+  // Calculate total video duration including all cards at their actual durations
+  const showDayCards = el('day-cards-cb') && el('day-cards-cb').checked;
+  let totalSecs = 0;
+
+  // Title card: 4s (if title set)
+  if (state.projectTitle) totalSecs += 4;
+  // End card: 5s
+  totalSecs += 5;
+
+  // Clips + day cards
+  let lastDay = null;
+  let isFirstDay = true;
+  for (const clip of state.clips) {
+    const sel = state.selections[clip.filename];
+    if (!sel || !sel.enabled) continue;
+    const day = clipDay(clip);
+    if (day !== lastDay) {
+      if (showDayCards && !state.disabledDayCards.has(day) &&
+          (!isFirstDay || !state.projectTitle)) {
+        totalSecs += 2;  // day card: 2s
+      }
+      lastDay = day;
+      isFirstDay = false;
+    }
+    totalSecs += 3 * (1 + (sel.extra_starts || []).length);
+  }
+  return totalSecs;
+}
+
 function updateMusicBar() {
   if (!state.musicTracks.length) return;
 
-  // Count selected clip slots
-  let selectedSlots = 0;
-  for (const sel of Object.values(state.selections)) {
-    if (sel.enabled) selectedSlots += 1 + (sel.extra_starts || []).length;
-  }
-
-  // Scale: 1 selected clip slot = 3s = PX_PER_3S px
-  // So pxPerSec = PX_PER_3S / 3
+  // Scale: 1 clip tile = 3s = PX_PER_3S px → pxPerSec = PX_PER_3S / 3
   const pxPerSec = PX_PER_3S / 3;
 
   state.musicTracks.forEach((track, i) => {
@@ -1507,6 +1643,11 @@ function updateMusicBar() {
     const w = Math.max(8, Math.round(track.duration * pxPerSec));
     div.style.width = w + 'px';
   });
+
+  // Update total duration display on stats
+  const totalDur = totalVideoDuration();
+  const durEl = el('stat-total-dur');
+  if (durEl) durEl.textContent = totalDur.toFixed(0);
 }
 
 function bindScrollSync() {
@@ -1690,6 +1831,83 @@ el('queue-scroll').addEventListener('wheel', (e) => {
   el('queue-scroll').scrollLeft += e.deltaY;
 }, { passive: false });
 
+// ── Frame preview ─────────────────────────────────────────────────────────────
+let _fpTimer = null;
+
+function bindFramesPreview() {
+  const cb = el('frames-preview-cb');
+  cb.checked = localStorage.getItem('clipcutter_frames_preview') === '1';
+  applyFramePreviewVisibility();
+  cb.addEventListener('change', () => {
+    localStorage.setItem('clipcutter_frames_preview', cb.checked ? '1' : '0');
+    applyFramePreviewVisibility();
+    if (cb.checked) scheduleFramePreview();
+    else clearFramePreviews();
+  });
+}
+
+function applyFramePreviewVisibility() {
+  const on = el('frames-preview-cb').checked;
+  el('frame-preview-left').style.display  = on ? 'flex' : 'none';
+  el('frame-preview-right').style.display = on ? 'flex' : 'none';
+}
+
+function clearFramePreviews() {
+  el('fp-first').src = '';
+  el('fp-last').src  = '';
+}
+
+function scheduleFramePreview(delay = 200) {
+  if (!el('frames-preview-cb').checked) return;
+  clearTimeout(_fpTimer);
+  _fpTimer = setTimeout(updateFramePreviews, delay);
+}
+
+function updateFramePreviews() {
+  if (!el('frames-preview-cb').checked) return;
+  const clip = state.clips[state.current];
+  if (!clip) return;
+
+  const leftPanel  = el('frame-preview-left');
+  const rightPanel = el('frame-preview-right');
+  const imgFirst   = el('fp-first');
+  const imgLast    = el('fp-last');
+
+  // Hide panels immediately so stale frames from a previous clip don't linger
+  leftPanel.style.visibility  = 'hidden';
+  rightPanel.style.visibility = 'hidden';
+
+  const mark = state.markSlots[state.activeSlot];
+  const dur  = clip.duration || 0;
+  const t    = mark ?? 0;
+  const tEnd = mark != null
+    ? Math.min(mark + 3, dur > 0 ? dur - 0.033 : mark + 3)  // mark set: show fragment end
+    : (dur > 0 ? dur - 0.033 : 0);                           // no mark: show last frame of clip
+  const enc = encodeURIComponent(clip.filename);
+  const fmt = s => s.toFixed(1) + 's';
+
+  leftPanel.querySelector('.fp-label').textContent  = `first frame (${fmt(t)})`;
+  rightPanel.querySelector('.fp-label').textContent = `last frame (${fmt(tEnd)})`;
+
+  // Reveal both panels only after both images finish loading (or fail)
+  let pending = 2;
+  function reveal() {
+    if (--pending === 0) {
+      leftPanel.style.visibility  = '';
+      rightPanel.style.visibility = '';
+    }
+  }
+
+  // cs=cache_start: lets server use pre-cut clip cache (small H.264, instant seek)
+  const cs = mark != null ? `&cs=${mark.toFixed(3)}` : '';
+
+  imgFirst.onload = imgFirst.onerror = reveal;
+  imgFirst.src = `/api/frame/${enc}?t=${t.toFixed(3)}${cs}`;
+
+  imgLast.onload = imgLast.onerror = reveal;
+  imgLast.src = `/api/frame/${enc}?t=${tEnd.toFixed(3)}${cs}`;
+}
+
 // ── Autoplay ──────────────────────────────────────────────────────────────────
 function bindAutoplay() {
   const cb = el('autoplay-cb');
@@ -1705,8 +1923,44 @@ function bindDayCards() {
   cb.checked = localStorage.getItem('clipcutter_day_cards') !== '0';  // default: on
   cb.addEventListener('change', () => {
     localStorage.setItem('clipcutter_day_cards', cb.checked ? '1' : '0');
-    buildQueue();  // rebuild timeline preview immediately
+    renderQueue();
+    updateMusicBar();
   });
+}
+
+function updateDayCardsMasterCheckbox() {
+  const cb = el('day-cards-cb');
+  if (!cb || !cb.checked) return;  // if unchecked, don't touch
+  // Gather all days that have enabled clips
+  const enabledDays = daysWithEnabledClips();
+  if (enabledDays.size === 0) return;
+  const disabledCount = [...enabledDays].filter(d => state.disabledDayCards.has(d)).length;
+  if (disabledCount === 0) {
+    cb.indeterminate = false;
+    cb.checked = true;
+  } else if (disabledCount === enabledDays.size) {
+    cb.indeterminate = false;
+    cb.checked = true;  // keep checked (day cards toggle = master on/off)
+  } else {
+    cb.indeterminate = true;
+  }
+}
+
+async function toggleDayCard(date, currentlyDisabled) {
+  const nowEnabled = currentlyDisabled;  // we flip the state
+  if (nowEnabled) {
+    state.disabledDayCards.delete(date);
+  } else {
+    state.disabledDayCards.add(date);
+  }
+  renderQueue();
+  updateMusicBar();
+  updateDayCardsMasterCheckbox();
+  try {
+    await api('POST', '/api/day_card_toggle', { date, enabled: nowEnabled });
+  } catch(e) {
+    console.warn('toggleDayCard error:', e);
+  }
 }
 
 // ── Title / subtitle auto-save ────────────────────────────────────────────────
@@ -1720,12 +1974,8 @@ function bindTitleFields() {
       state.projectTitle    = title;
       state.projectSubtitle = subtitle;
       api('POST', '/api/settings', { title, subtitle });
-      // Update intro tile appearance live
-      const introTile = el('q-card-intro');
-      if (introTile) {
-        introTile.classList.toggle('has-title', !!title);
-        introTile.title = title ? `Intro card: ${title}` : 'Intro card (no title)';
-      }
+      // Rebuild queue so intro tile thumbnail updates
+      renderQueue();
     }, 600);
   }
   el('film-title').addEventListener('input', save);
@@ -1755,6 +2005,37 @@ document.addEventListener('keydown', e => {
     case 'PageDown': e.preventDefault(); goToClip(state.current + 1);   break;
   }
 });
+
+// ── Clip size warning ─────────────────────────────────────────────────────────
+function checkClipSize(clip) {
+  const warn = el('size-warning');
+  const msg  = el('size-warning-msg');
+  // Always clear first — previous clip's warning must never linger
+  if (warn) warn.classList.remove('show');
+  if (!warn || !msg || !clip) return;
+  const w = clip.width  || 0;
+  const h = clip.height || 0;
+  if (!w || !h) return;
+  let issue = null;
+  if (w > h) {
+    issue = `landscape (${w}×${h})`;
+  } else if (w !== 1080 || h !== 1920) {
+    issue = `${w}×${h} (expected 1080×1920)`;
+  }
+  if (issue) {
+    msg.textContent = issue;
+    warn.classList.add('show');
+  }
+}
+
+// ── Shutdown ──────────────────────────────────────────────────────────────────
+async function shutdownApp() {
+  if (!confirm('Close Clip Cutter and stop the server?')) return;
+  try {
+    await api('POST', '/api/shutdown', {});
+  } catch(e) { /* expected – server closes */ }
+  document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;color:#777;font-family:monospace">Server stopped. You can close this tab.</div>';
+}
 
 // ── KB help ───────────────────────────────────────────────────────────────────
 function toggleKbHelp() {
