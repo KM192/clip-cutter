@@ -1,0 +1,20 @@
+# FFmpeg binaries (download separately from https://www.gyan.dev/ffmpeg/builds/)
+ffmpeg.exe
+ffprobe.exe
+ffplay.exe
+
+# User data — generated per project folder, not part of the tool
+selections.json
+output/
+.clip_cache/
+.preview/
+temp/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# OS
+.DS_Store
+Thumbs.db

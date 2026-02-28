@@ -1,0 +1,1769 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Clip Cutter</title>
+  <style>
+    /* ── Reset & base ─────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:      #0f0f0f;
+      --surface: #1a1a1a;
+      --border:  #2e2e2e;
+      --text:    #d4d4d4;
+      --dim:     #777;
+      --accent:  #4488ff;
+      --green:   #3aaa66;
+      --red:     #e05050;
+      --orange:  #e09030;
+      --radius:  6px;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Consolas', 'Courier New', monospace;
+      font-size: 13px;
+      line-height: 1.4;
+      overflow: hidden;
+    }
+
+    /* ── Overlays ─────────────────────────────────────────────── */
+    .overlay {
+      position: fixed; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      background: var(--bg);
+      z-index: 50;
+    }
+    .overlay.hidden { display: none; }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 32px;
+      min-width: 380px;
+      max-width: 480px;
+      width: 100%;
+    }
+    .card h1 { font-size: 20px; margin-bottom: 8px; color: var(--accent); }
+    .card p  { color: var(--dim); margin-bottom: 20px; font-size: 12px; }
+
+    input[type="text"] {
+      width: 100%;
+      background: #111;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      padding: 8px 10px;
+      font-family: inherit;
+      font-size: 13px;
+      margin-bottom: 10px;
+    }
+    input[type="text"]:focus { outline: none; border-color: var(--accent); }
+
+    .hint { font-size: 11px; color: var(--dim); margin-bottom: 16px; }
+
+    /* ── Buttons ──────────────────────────────────────────────── */
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      gap: 4px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 13px;
+      padding: 6px 12px;
+      transition: background .1s, border-color .1s;
+      user-select: none;
+      white-space: nowrap;
+    }
+    .btn:hover  { background: #252525; border-color: #555; }
+    .btn:active { background: #333; }
+
+    .btn-accent  { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .btn-accent:hover { background: #3377ee; border-color: #3377ee; }
+
+    .btn-green   { background: var(--green);  border-color: var(--green);  color: #fff; font-weight: bold; }
+    .btn-green:hover  { background: #2e9955; }
+    .btn-green:active { background: #287a44; }
+
+    .btn-red     { background: var(--red);    border-color: var(--red);    color: #fff; font-weight: bold; }
+    .btn-red:hover  { background: #c04040; }
+    .btn-red:active { background: #a03030; }
+
+    .btn-orange  { background: var(--orange); border-color: var(--orange); color: #fff; font-weight: bold; }
+    .btn-orange:hover { background: #c07820; }
+
+    .btn:disabled { opacity: .4; cursor: not-allowed; }
+
+    /* ── Layout ───────────────────────────────────────────────── */
+    #app {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+
+    /* Nav bar */
+    #nav {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    #nav-info {
+      flex: 1;
+      text-align: center;
+      overflow: hidden;
+    }
+    #nav-folder {
+      font-size: 10px; color: var(--dim);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    #nav-counter { font-weight: bold; color: var(--accent); }
+    #nav-filename {
+      font-size: 11px; color: var(--dim);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+
+    /* Main content */
+    #main {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    /* Video area */
+    #video-area {
+      flex: 1;
+      display: flex;
+      align-items: stretch;
+      justify-content: center;
+      background: #000;
+      min-height: 180px;
+      overflow: hidden;
+      position: relative;
+    }
+
+    #video-wrap {
+      height: 100%;
+      aspect-ratio: 9 / 16;
+      background: #000;
+      display: flex; align-items: center; justify-content: center;
+      position: relative;
+    }
+
+    #video {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
+    }
+
+    /* Preview-not-ready overlay */
+    #video-wait {
+      position: absolute; inset: 0;
+      display: none;
+      flex-direction: column;
+      align-items: center; justify-content: center;
+      background: rgba(0,0,0,.82);
+      color: var(--dim);
+      font-size: 12px;
+      gap: 10px;
+      text-align: center;
+    }
+    #video-wait.show { display: flex; }
+
+    /* Status badge on video */
+    #clip-badge {
+      position: absolute;
+      top: 6px; right: 6px;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-size: 11px;
+      font-weight: bold;
+      display: none;
+    }
+    #clip-badge.taken  { display: block; background: var(--green);  color: #fff; }
+    #clip-badge.skipped{ display: block; background: var(--red);    color: #fff; }
+
+    /* Bottom panel */
+    #panel {
+      flex-shrink: 0;
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+    }
+
+    /* Timeline */
+    #timeline-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px 4px;
+    }
+
+    #timeline-container {
+      flex: 1;
+      position: relative;
+      height: 18px;
+      cursor: pointer;
+      user-select: none;
+    }
+    #scrubber-track {
+      position: absolute;
+      left: 0; right: 0;
+      top: 50%; transform: translateY(-50%);
+      height: 4px;
+      background: var(--border);
+      border-radius: 2px;
+      pointer-events: none;
+    }
+    #scrubber-fill {
+      position: absolute;
+      left: 0;
+      top: 50%; transform: translateY(-50%);
+      height: 4px;
+      background: var(--accent);
+      border-radius: 2px;
+      width: 0%;
+      pointer-events: none;
+    }
+    #scrubber-thumb {
+      position: absolute;
+      width: 12px; height: 12px;
+      border-radius: 50%;
+      background: var(--accent);
+      top: 50%; transform: translate(-50%, -50%);
+      left: 0%;
+      pointer-events: none;
+      transition: transform .05s;
+    }
+    #timeline-container:active #scrubber-thumb {
+      transform: translate(-50%, -50%) scale(1.3);
+    }
+    #mark-indicator {
+      position: absolute;
+      top: 50%; transform: translate(-50%, -50%);
+      width: 3px; height: 14px;
+      background: var(--orange);
+      border-radius: 1px;
+      pointer-events: none;
+      display: none;
+    }
+    #mark-span {
+      position: absolute;
+      top: 50%; transform: translateY(-50%);
+      height: 4px;
+      background: rgba(224, 144, 48, 0.45);
+      border-radius: 2px;
+      pointer-events: none;
+      display: none;
+    }
+
+    .time-display { color: var(--dim); font-size: 12px; white-space: nowrap; }
+
+    /* Frame controls */
+    #frame-controls {
+      display: flex;
+      align-items: center;
+      padding: 4px 10px;
+    }
+    #frame-controls-inner {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+    }
+    #play-btn { min-width: 70px; }
+
+    /* Mark & decision section */
+    #action-row {
+      display: flex;
+      justify-content: center;
+      padding: 6px 10px;
+      border-top: 1px solid var(--border);
+    }
+    #action-inner {
+      display: flex;
+      align-items: stretch;
+      gap: 8px;
+      max-width: 700px;
+      width: 100%;
+    }
+
+    #mark-section {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .mark-header {
+      display: flex;
+      gap: 4px;
+      align-items: center;
+    }
+    #slots-list {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      margin-top: 2px;
+    }
+    .slot-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 6px;
+      border-radius: 3px;
+      border: 1px solid transparent;
+      cursor: pointer;
+      font-size: 11px;
+      color: var(--dim);
+      transition: background .1s;
+    }
+    .slot-item:hover  { background: rgba(255,255,255,.04); }
+    .slot-item.active { border-color: var(--orange); background: rgba(224,144,48,.08); color: var(--text); }
+    .slot-num {
+      font-weight: bold;
+      color: var(--orange);
+      min-width: 14px;
+    }
+    .slot-time { flex: 1; }
+    .slot-time.unmarked { color: var(--dim); font-style: italic; }
+    .slot-remove {
+      padding: 0 5px;
+      font-size: 12px;
+      line-height: 1.4;
+      color: var(--dim);
+      border-color: transparent;
+      background: transparent;
+    }
+    .slot-remove:hover { color: var(--red); border-color: var(--red); background: rgba(224,80,80,.1); }
+
+    #decision-section {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      justify-content: center;
+    }
+    #take-btn, #skip-btn {
+      min-width: 140px;
+      font-size: 13px;
+      padding: 8px 14px;
+    }
+
+    /* Queue section */
+    #queue-section {
+      border-top: 1px solid var(--border);
+      padding: 6px 10px 8px;
+    }
+
+    #queue-scroll {
+      display: flex;
+      gap: 4px;
+      overflow-x: auto;
+      padding-bottom: 4px;
+      scroll-behavior: smooth;
+    }
+    #queue-scroll::-webkit-scrollbar { height: 4px; }
+    #queue-scroll::-webkit-scrollbar-track { background: var(--bg); }
+    #queue-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    .q-item {
+      flex-shrink: 0;
+      width: 36px; height: 36px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      cursor: pointer;
+      font-size: 10px;
+      color: var(--dim);
+      transition: border-color .1s, background .1s;
+      position: relative;
+    }
+    .q-item:hover { border-color: #555; }
+    .q-item.current  { border-color: var(--accent); background: rgba(68,136,255,.18); color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+    .q-item.taken    { border-color: var(--green);  background: rgba(58,170,102,.15); color: var(--green); }
+    .q-item.skipped  { border-color: var(--red);    background: rgba(224,80,80,.12);  color: var(--red); }
+    .q-item.taken.current, .q-item.skipped.current { border-color: var(--accent); }
+    .q-item.preview-working { opacity: 0.55; }
+    .q-item.preview-pending { opacity: 0.30; }
+    .q-item.preview-error   { opacity: 0.25; border-style: dashed !important; }
+    .q-item .q-num  { font-weight: bold; line-height: 1; }
+    .q-item .q-icon { font-size: 9px; line-height: 1; }
+
+    #queue-actions {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 4px;
+    }
+    #queue-actions .btn { font-size: 11px; padding: 3px 8px; }
+
+    #queue-footer {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 4px;
+      flex-wrap: wrap;
+    }
+    #stats { color: var(--dim); font-size: 11px; margin-right: 4px; }
+    #stats strong { color: var(--text); }
+
+    #queue-footer input[type="text"] {
+      flex: 1;
+      min-width: 80px;
+      margin-bottom: 0;
+      background: #151515;
+      border-color: #333;
+      padding: 5px 8px;
+      font-size: 12px;
+    }
+
+    /* Export progress */
+    #export-section {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    #progress-wrap {
+      flex: 1;
+      min-width: 120px;
+      display: none;
+      flex-direction: column;
+      gap: 3px;
+    }
+    #progress-bar-outer {
+      height: 6px;
+      background: var(--border);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    #progress-bar-inner {
+      height: 100%;
+      background: var(--accent);
+      border-radius: 3px;
+      width: 0%;
+      transition: width .3s;
+    }
+    #progress-text { font-size: 11px; color: var(--dim); }
+    #progress-text.error { color: var(--red); }
+    #progress-text.done  { color: var(--green); }
+    #progress-eta  { font-size: 11px; color: var(--orange); white-space: nowrap; margin-left: auto; padding-left: 8px; }
+
+    /* During export: give progress bar equal footing with the text inputs */
+    #queue-footer.exporting #export-section { flex: 1; }
+
+    /* Spinner */
+    .spinner {
+      display: inline-block;
+      width: 20px; height: 20px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Loading status text */
+    #load-status { font-size: 12px; color: var(--dim); margin-top: 8px; min-height: 18px; }
+    #load-status.error { color: var(--red); }
+
+    /* Keyboard help (bottom-right) */
+    #kb-help {
+      position: fixed;
+      bottom: 8px; right: 8px;
+      background: rgba(26,26,26,.9);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 8px 12px;
+      font-size: 11px;
+      color: var(--dim);
+      display: none;
+      z-index: 10;
+      line-height: 1.8;
+    }
+    #kb-help kbd {
+      background: #333;
+      border: 1px solid #555;
+      border-radius: 3px;
+      padding: 0 4px;
+      font-family: inherit;
+      color: var(--text);
+    }
+
+    /* Music bar */
+    #music-row {
+      display: none;
+      align-items: center;
+      gap: 6px;
+      margin-top: 3px;
+    }
+    #music-label {
+      font-size: 10px;
+      color: var(--dim);
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    #music-scroll {
+      display: flex;
+      gap: 2px;
+      overflow-x: auto;
+      height: 22px;
+      flex: 1;
+      scroll-behavior: smooth;
+    }
+    #music-scroll::-webkit-scrollbar { height: 3px; }
+    #music-scroll::-webkit-scrollbar-track { background: var(--bg); }
+    #music-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 1px; }
+    .music-block {
+      flex-shrink: 0;
+      height: 22px;
+      border: 1px solid;
+      border-radius: 3px;
+      display: flex;
+      align-items: center;
+      padding: 0 5px;
+      overflow: hidden;
+      cursor: default;
+    }
+    .music-block:hover { filter: brightness(1.25); }
+
+    /* ── Queue card tiles (intro / day / end) ─────────────────── */
+    .q-card {
+      flex-shrink: 0;
+      height: 36px;
+      border: 1px solid;
+      border-radius: 4px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      font-size: 9px;
+      line-height: 1.2;
+      cursor: default;
+      user-select: none;
+      padding: 2px 4px;
+      text-align: center;
+    }
+    .q-card-intro {
+      width: 50px;
+      border-color: var(--accent);
+      background: rgba(68,136,255,.06);
+      color: var(--dim);
+      opacity: 0.55;
+    }
+    .q-card-intro.has-title {
+      opacity: 1;
+      background: rgba(68,136,255,.12);
+      color: var(--accent);
+    }
+    .q-card-day {
+      width: 54px;
+      border-color: #3a3a55;
+      background: rgba(80,80,160,.12);
+      color: #8888bb;
+    }
+    .q-card-end {
+      width: 44px;
+      border-color: #333;
+      background: rgba(255,255,255,.02);
+      color: #555;
+    }
+
+    .music-name {
+      font-size: 9px;
+      color: rgba(255,255,255,0.75);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      display: block;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── Folder loader overlay ───────────────────────────────────── -->
+<div id="overlay-loader" class="overlay">
+  <div class="card">
+    <h1>&#127916; Clip Cutter</h1>
+    <p>Tool for quick editing of vertical MP4 clips (9:16).</p>
+    <label style="display:block; margin-bottom:4px; font-size:12px; color:var(--dim)">
+      Path to folder with videos:
+    </label>
+    <input type="text" id="folder-input"
+           placeholder="C:\path\to\folder with videos"
+           autocomplete="off" spellcheck="false">
+    <div class="hint">
+      You can also run: <code>python server.py C:\path</code>
+    </div>
+    <button class="btn btn-accent" id="load-btn" onclick="loadFolder()" style="width:100%">
+      Scan and load videos
+    </button>
+    <div id="load-status"></div>
+  </div>
+</div>
+
+<!-- ── Session expired overlay ───────────────────────────────── -->
+<div id="overlay-expired" class="overlay hidden">
+  <div class="card" style="text-align:center">
+    <h1 style="color:var(--red)">Session ended</h1>
+    <p>Another tab or window took over the server connection.<br>
+       Refresh the page to resume the session.</p>
+    <button class="btn btn-accent" onclick="location.reload()" style="width:100%; margin-top:16px">
+      &#8635; Resume this tab
+    </button>
+  </div>
+</div>
+
+<!-- ── Scanning overlay ───────────────────────────────────────── -->
+<div id="overlay-scanning" class="overlay hidden">
+  <div style="text-align:center">
+    <div class="spinner" style="margin:0 auto 16px"></div>
+    <div style="color:var(--dim)">Scanning MP4 files...<br>
+    <span style="font-size:11px">(ffprobe fetching clip durations)</span></div>
+  </div>
+</div>
+
+<!-- ── Main app ───────────────────────────────────────────────── -->
+<div id="app" style="display:none">
+
+  <!-- Navigation bar -->
+  <div id="nav">
+    <button class="btn" id="prev-btn" onclick="goToClip(state.current - 1)" title="PageUp">
+      &laquo; Previous
+    </button>
+    <div id="nav-info">
+      <div id="nav-folder"></div>
+      <div id="nav-counter">&#8212;</div>
+      <div id="nav-filename"></div>
+    </div>
+    <button class="btn" id="next-btn" onclick="goToClip(state.current + 1)" title="PageDown">
+      Next &raquo;
+    </button>
+  </div>
+
+  <!-- Main content -->
+  <div id="main">
+
+    <!-- Video -->
+    <div id="video-area">
+      <div id="video-wrap">
+        <video id="video" preload="metadata"></video>
+        <div id="clip-badge"></div>
+        <div id="video-wait">
+          <div class="spinner"></div>
+          <div id="video-wait-msg">Generating preview...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bottom panel -->
+    <div id="panel">
+
+      <!-- Timeline -->
+      <div id="timeline-row">
+        <span class="time-display" id="time-cur">00:00.00</span>
+        <div id="timeline-container">
+          <div id="scrubber-track"></div>
+          <div id="scrubber-fill"></div>
+          <div id="scrubber-thumb"></div>
+          <div id="mark-span"></div>
+          <div id="mark-indicator"></div>
+        </div>
+        <span class="time-display" id="time-rem" title="time remaining in clip">-00:00.00</span>
+      </div>
+
+      <!-- Frame controls -->
+      <div id="frame-controls">
+        <div id="frame-controls-inner">
+          <button class="btn" onclick="seek(-1)"       title="ArrowLeft">&#9666;&#9666; -1s</button>
+          <button class="btn" onclick="seekFrame(-1)"  title=","        >&#9666; -frame</button>
+          <button class="btn" id="play-btn" onclick="togglePlay()" title="Space">&#9654; Play</button>
+          <button class="btn" onclick="seekFrame(1)"   title="."        >+frame &#9656;</button>
+          <button class="btn" onclick="seek(1)"        title="ArrowRight">+1s &#9656;&#9656;</button>
+        </div>
+        <label id="autoplay-label" title="Automatically play after selecting a clip"
+               style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:11px;color:var(--dim);user-select:none;white-space:nowrap;padding:0 4px">
+          <input type="checkbox" id="autoplay-cb" style="margin:0;cursor:pointer">
+          auto&#9654;
+        </label>
+        <button class="btn" id="kb-toggle" onclick="toggleKbHelp()" title="Keyboard shortcuts" style="color:var(--dim)">
+          &#9000; keys
+        </button>
+      </div>
+
+      <!-- Mark + decision -->
+      <div id="action-row">
+        <div id="action-inner">
+        <div id="mark-section">
+          <div class="mark-header">
+            <button class="btn btn-orange" onclick="markStart()" title="S">
+              &#9654; MARK START &nbsp;<kbd>S</kbd>
+            </button>
+            <button class="btn" id="dup-btn" onclick="addSlot()" title="Add a second fragment with a different start">
+              + duplicate
+            </button>
+          </div>
+          <div id="slots-list"></div>
+        </div>
+        <div id="decision-section">
+          <button class="btn btn-green" id="take-btn" onclick="takeClip()" title="Enter">
+            &#10003; TAKE &nbsp;<kbd>Enter</kbd>
+          </button>
+          <button class="btn btn-red" id="skip-btn" onclick="skipClip()" title="Delete">
+            &#10007; SKIP &nbsp;<kbd>Del</kbd>
+          </button>
+        </div>
+        </div><!-- /action-inner -->
+      </div>
+
+      <!-- Queue section -->
+      <div id="queue-section">
+        <div id="queue-actions">
+          <button class="btn" onclick="selectAll()" title="Select all clips as TAKE from the beginning">&#10003; Select all</button>
+          <button class="btn" onclick="clearAll()" title="Remove all selections">&#10007; Deselect all</button>
+          <label id="day-cards-label" title="Insert day title cards between days in the film"
+                 style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:11px;color:var(--dim);user-select:none;white-space:nowrap;margin-left:8px">
+            <input type="checkbox" id="day-cards-cb" style="margin:0;cursor:pointer">
+            day cards
+          </label>
+        </div>
+        <div id="queue-scroll"></div>
+        <div id="music-row">
+          <div id="music-label">&#9835; Music:</div>
+          <div id="music-scroll"></div>
+        </div>
+        <div id="queue-footer">
+          <div id="stats">Selected: <strong id="stat-count">0</strong> clips ~<strong id="stat-dur">0</strong>s</div>
+          <input type="text" id="film-title" placeholder="Title..." maxlength="60" autocomplete="off">
+          <input type="text" id="film-subtitle" placeholder="Subtitle..." maxlength="80" autocomplete="off">
+          <div id="export-section">
+            <div id="progress-wrap">
+              <div id="progress-bar-outer"><div id="progress-bar-inner"></div></div>
+              <div style="display:flex;align-items:center">
+                <div id="progress-text"></div>
+                <div id="progress-eta"></div>
+              </div>
+            </div>
+            <button class="btn btn-accent" id="export-btn" onclick="exportFilm()" disabled>
+              &#9654; EXPORT
+            </button>
+            <button class="btn" id="clear-cache-btn" onclick="clearCache()" title="Delete all cached clips and cards — forces full re-encode on next export" style="color:var(--dim);font-size:11px">
+              &#128465; clear cache
+            </button>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /panel -->
+  </div><!-- /main -->
+</div><!-- /app -->
+
+<div id="kb-help">
+  <strong style="color:var(--text)">Keyboard shortcuts</strong><br>
+  <kbd>Space</kbd> Play / Pause<br>
+  <kbd>S</kbd> Mark start of 3-sec shot<br>
+  <kbd>&larr;</kbd> / <kbd>&rarr;</kbd> -1s / +1s<br>
+  <kbd>,</kbd> / <kbd>.</kbd> -frame / +frame<br>
+  <kbd>Enter</kbd> Take and go next<br>
+  <kbd>Del</kbd> Skip and go next<br>
+  <kbd>PgUp</kbd> Previous clip<br>
+  <kbd>PgDn</kbd> Next clip
+</div>
+
+<script>
+// ── State ─────────────────────────────────────────────────────────────────────
+const state = {
+  clips: [],
+  selections: {},      // filename -> {filename, start_time, enabled, extra_starts:[]}
+  previewStatus: {},   // filename -> 'ready'|'working'|'pending'|'error'
+  current: 0,
+  markSlots: [null],   // array of start times; null = not marked (use 0.0)
+  activeSlot: 0,       // which slot S-key will update
+  exportPolling: null,
+  folder: '',
+  projectTitle: '',
+  projectSubtitle: '',
+  lastExportName: '',
+  exportStartTime: null,
+  etaSamples: [],      // [{t, pct}] sliding window for ETA rate calculation
+  musicTracks: [],     // [{filename, duration}] from folder/music/*.mp3
+};
+
+// ── Session ───────────────────────────────────────────────────────────────────
+let sessionId      = null;
+let sessionExpired = false;
+
+// ── Fragment auto-stop ────────────────────────────────────────────────────────
+// Set to true when navigating to a clip that already has a mark; the first
+// play-through will then stop automatically at mark + 3 s.
+let _fragmentAutoStop = false;
+
+function showSessionExpired() {
+  if (sessionExpired) return;
+  sessionExpired = true;
+  if (state.exportPolling) { clearInterval(state.exportPolling); state.exportPolling = null; }
+  el('overlay-expired').classList.remove('hidden');
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function fmt(sec) {
+  if (!isFinite(sec) || sec < 0) sec = 0;
+  const m  = Math.floor(sec / 60);
+  const s  = Math.floor(sec % 60);
+  const cs = Math.floor((sec % 1) * 100);
+  return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}.${String(cs).padStart(2,'0')}`;
+}
+
+function el(id) { return document.getElementById(id); }
+
+async function api(method, path, body) {
+  const opts = { method, headers: {} };
+  if (sessionId) opts.headers['X-Session-Id'] = sessionId;
+  if (body !== undefined) {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(body);
+  }
+  const r = await fetch(path, opts);
+  if (r.status === 409) {
+    showSessionExpired();
+    throw new Error('session_expired');
+  }
+  return r.json();
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+async function init() {
+  // Register this tab as the active session (displaces any previous tab)
+  const sess = await fetch('/api/session', { method: 'POST' });
+  const sessData = await sess.json();
+  sessionId = sessData.session_id;
+
+  const s = await api('GET', '/api/state');
+  if (s.loaded) {
+    state.folder        = s.folder        || '';
+    state.projectTitle  = s.title         || '';
+    state.projectSubtitle = s.subtitle    || '';
+    await loadClipsFromServer();
+    showApp();
+  } else {
+    el('overlay-loader').classList.remove('hidden');
+    // Focus input
+    setTimeout(() => el('folder-input').focus(), 100);
+  }
+}
+
+// ── Folder loading ────────────────────────────────────────────────────────────
+async function loadFolder() {
+  const folder = el('folder-input').value.trim();
+  if (!folder) { setLoadStatus('Enter the path to the folder', true); return; }
+
+  el('overlay-loader').classList.add('hidden');
+  el('overlay-scanning').classList.remove('hidden');
+
+  try {
+    const r = await api('POST', '/api/folder', { folder });
+    if (r.error) {
+      el('overlay-scanning').classList.add('hidden');
+      el('overlay-loader').classList.remove('hidden');
+      setLoadStatus(r.error, true);
+      return;
+    }
+    const s = await api('GET', '/api/state');
+    state.folder          = s.folder   || '';
+    state.projectTitle    = s.title    || '';
+    state.projectSubtitle = s.subtitle || '';
+    await loadClipsFromServer();
+    el('overlay-scanning').classList.add('hidden');
+    showApp();
+  } catch (e) {
+    el('overlay-scanning').classList.add('hidden');
+    el('overlay-loader').classList.remove('hidden');
+    setLoadStatus(`Connection error: ${e.message}`, true);
+  }
+}
+
+function setLoadStatus(msg, isError) {
+  const s = el('load-status');
+  s.textContent = msg;
+  s.className = isError ? 'error' : '';
+}
+
+async function loadClipsFromServer() {
+  const [clipsData, selData, musicData] = await Promise.all([
+    api('GET', '/api/clips'),
+    api('GET', '/api/selections'),
+    api('GET', '/api/music'),
+  ]);
+  state.clips       = clipsData.clips   || [];
+  state.selections  = selData.selections || {};
+  state.musicTracks = musicData.tracks  || [];
+}
+
+async function showApp() {
+  el('overlay-loader').classList.add('hidden');
+  el('overlay-scanning').classList.add('hidden');
+  el('app').style.display = 'flex';
+  el('film-title').value    = state.projectTitle;
+  el('film-subtitle').value = state.projectSubtitle;
+  el('nav-folder').textContent = state.folder ? '\uD83D\uDCC2 ' + state.folder : '';
+  bindAutoplay();
+  bindDayCards();   // must run before renderQueue so checkbox state is set
+  renderQueue();
+  renderMusicBar();
+  updateStats();
+  goToClip(0);
+  bindVideo();
+  bindTitleFields();
+  bindScrollSync();
+  pollPreviewStatus();  // start polling – stops automatically when all ready
+
+  // Resume export progress bar if export is already running (e.g. after page refresh)
+  try {
+    const es = await api('GET', '/api/export/status');
+    if (es.status === 'working') {
+      state.exportStartTime = null;
+      state.etaSamples = [];
+      el('progress-wrap').style.display = 'flex';
+      el('progress-text').className = '';
+      el('progress-text').textContent = es.progress || 'Export in progress...';
+      el('progress-eta').textContent = '';
+      el('queue-footer').classList.add('exporting');
+      el('export-btn').disabled = true;
+      if (state.exportPolling) clearInterval(state.exportPolling);
+      state.exportPolling = setInterval(pollExport, 600);
+    }
+  } catch (e) { /* ignore */ }
+}
+
+// ── Video binding ─────────────────────────────────────────────────────────────
+function bindVideo() {
+  const v = el('video');
+
+  v.addEventListener('timeupdate', () => {
+    if (!v.duration) return;
+    setScrubber(v.currentTime / v.duration);
+    el('time-cur').textContent = fmt(v.currentTime);
+    el('time-rem').textContent = '-' + fmt(v.duration - v.currentTime);
+    updateMarkIndicator();
+
+    // Auto-stop at end of marked fragment (first play-through after navigation or slot click)
+    if (_fragmentAutoStop && !v.paused) {
+      const mark = state.markSlots[state.activeSlot];
+      if (mark != null && v.currentTime >= mark + 3) {
+        v.pause();
+        _fragmentAutoStop = false;
+      }
+    }
+  });
+
+  v.addEventListener('loadedmetadata', () => {
+    setScrubber(0);
+    el('time-cur').textContent = fmt(0);
+    el('time-rem').textContent = '-' + fmt(v.duration);
+  });
+
+  v.addEventListener('play',  () => { el('play-btn').textContent = '⏸ Pause'; });
+  v.addEventListener('pause', () => { el('play-btn').textContent = '▶ Play'; });
+  v.addEventListener('ended', () => { el('play-btn').textContent = '▶ Play'; });
+
+  v.addEventListener('error', () => {
+    console.warn('Video load error:', v.error);
+  });
+
+  bindScrubber();
+}
+
+// ── Scrubber ──────────────────────────────────────────────────────────────────
+function setScrubber(pct) {
+  const p = `${pct * 100}%`;
+  el('scrubber-fill').style.width = p;
+  el('scrubber-thumb').style.left = p;
+}
+
+function bindScrubber() {
+  const container = el('timeline-container');
+  let dragging = false;
+
+  function seekAt(clientX) {
+    const rect = container.getBoundingClientRect();
+    const pct  = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    const v    = el('video');
+    if (isFinite(v.duration)) v.currentTime = pct * v.duration;
+  }
+
+  container.addEventListener('mousedown', (e) => {
+    dragging = true;
+    seekAt(e.clientX);
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove',  (e) => { if (dragging) seekAt(e.clientX); });
+  document.addEventListener('mouseup',    ()  => { dragging = false; });
+
+  container.addEventListener('touchstart', (e) => {
+    dragging = true;
+    seekAt(e.touches[0].clientX);
+    e.preventDefault();
+  }, { passive: false });
+  document.addEventListener('touchmove', (e) => { if (dragging) seekAt(e.touches[0].clientX); });
+  document.addEventListener('touchend',  ()  => { dragging = false; });
+
+  container.addEventListener('dblclick', (e) => {
+    const rect = container.getBoundingClientRect();
+    const pct  = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const v    = el('video');
+    if (!isFinite(v.duration)) return;
+    state.markSlots[state.activeSlot] = pct * v.duration;
+    updateMarkInfo();
+  });
+}
+
+// ── Preview status polling ────────────────────────────────────────────────────
+let _previewPollTimer = null;
+
+function isClipReady(filename) {
+  const s = state.previewStatus[filename];
+  return !s || s === 'ready' || s === 'error';
+}
+
+function updateVideoWait(clip) {
+  const s   = state.previewStatus[clip.filename];
+  const msg = { working: 'Generating H264 preview...', pending: 'Waiting in queue...' };
+  const notReady = (s === 'working' || s === 'pending');
+  el('video-wait').classList.toggle('show', notReady);
+  if (notReady) el('video-wait-msg').textContent = msg[s] || '...';
+  el('take-btn').disabled = notReady;
+  el('skip-btn').disabled = notReady;
+  el('play-btn').disabled = notReady;
+}
+
+async function pollPreviewStatus() {
+  _previewPollTimer = null;
+  let data;
+  try {
+    data = await api('GET', '/api/preview_status');
+  } catch (e) {
+    _previewPollTimer = setTimeout(pollPreviewStatus, 3000);
+    return;
+  }
+
+  const prev = state.previewStatus;
+  state.previewStatus = data.status || {};
+
+  // Update queue tiles
+  state.clips.forEach(c => updateQueueItem(c.filename));
+
+  // If current clip just became ready (was working/pending, now ready) → load it
+  const cur = state.clips[state.current];
+  if (cur) {
+    const wasNotReady = prev[cur.filename] === 'working' || prev[cur.filename] === 'pending';
+    if (wasNotReady && isClipReady(cur.filename)) {
+      goToClip(state.current);  // reloads video now that preview is available
+    } else {
+      updateVideoWait(cur);
+    }
+  }
+
+  if (!data.all_ready) {
+    _previewPollTimer = setTimeout(pollPreviewStatus, 2000);
+  }
+}
+
+// ── Navigation ────────────────────────────────────────────────────────────────
+function goToClip(idx) {
+  if (idx < 0 || idx >= state.clips.length) return;
+
+  // Auto-save mark changes when navigating away from a "taken" clip
+  if (idx !== state.current) {
+    const prev    = state.clips[state.current];
+    const prevSel = prev && state.selections[prev.filename];
+    if (prevSel && prevSel.enabled) {
+      const primary = state.markSlots[0] ?? 0;
+      const extras  = state.markSlots.slice(1).map(t => t ?? 0);
+      saveSelection(prev.filename, primary, true, extras); // fire-and-forget
+    }
+  }
+
+  state.current = idx;
+  const clip = state.clips[idx];
+
+  // Restore slots from previous decision
+  const sel = state.selections[clip.filename];
+  if (sel && sel.enabled) {
+    state.markSlots = [sel.start_time ?? null, ...(sel.extra_starts || [])];
+  } else {
+    state.markSlots = [null];
+  }
+  state.activeSlot = 0;
+
+  _fragmentAutoStop = false;  // reset; will be set in loadedmetadata if mark present
+
+  const v = el('video');
+  el('play-btn').textContent = '\u25BA Play'; // reset – v.load() nie emituje 'pause'
+
+  if (isClipReady(clip.filename)) {
+    v.src = `/api/video/${encodeURIComponent(clip.filename)}`;
+    v.load();
+    // Jump to mark time if set, enable auto-stop, then autoplay if enabled
+    v.addEventListener('loadedmetadata', function onMeta() {
+      v.removeEventListener('loadedmetadata', onMeta);
+      const t = state.markSlots[0];
+      if (t != null) {
+        v.currentTime = t;
+        _fragmentAutoStop = true;  // stop automatically at t + 3s
+      }
+      if (el('autoplay-cb').checked) v.play().catch(() => {});
+    }, { once: true });
+  } else {
+    v.removeAttribute('src');
+    v.load();
+  }
+  updateVideoWait(clip);
+
+  updateNav();
+  updateMarkInfo();
+  updateDecisionBadge();
+  updateQueueHighlight();
+}
+
+function updateNav() {
+  const clip = state.clips[state.current];
+  el('nav-counter').textContent = `Clip ${state.current + 1} / ${state.clips.length}`;
+  el('nav-filename').textContent = clip.filename;
+  el('prev-btn').disabled = state.current === 0;
+  el('next-btn').disabled = state.current === state.clips.length - 1;
+}
+
+// ── Mark / slots ──────────────────────────────────────────────────────────────
+function markStart() {
+  state.markSlots[state.activeSlot] = el('video').currentTime;
+  updateMarkInfo();
+}
+
+function addSlot() {
+  state.markSlots.push(null);
+  state.activeSlot = state.markSlots.length - 1;
+  updateMarkInfo();
+}
+
+function removeSlot(i) {
+  if (state.markSlots.length <= 1) return;
+  state.markSlots.splice(i, 1);
+  state.activeSlot = Math.min(state.activeSlot, state.markSlots.length - 1);
+  updateMarkInfo();
+}
+
+function setActiveSlot(i) {
+  state.activeSlot = i;
+  const t = state.markSlots[i];
+  const v = el('video');
+  if (t != null && isFinite(v.duration)) {
+    v.currentTime = t;
+    _fragmentAutoStop = true;
+    if (el('autoplay-cb').checked) v.play().catch(() => {});
+  }
+  updateMarkInfo();
+}
+
+function updateMarkInfo() {
+  const clip = state.clips[state.current];
+  const dur  = clip.duration || 0;
+  const list = el('slots-list');
+  list.innerHTML = '';
+
+  state.markSlots.forEach((t, i) => {
+    const start   = t ?? 0;
+    const end     = Math.min(start + 3, dur);
+    const isActive = i === state.activeSlot;
+
+    const div = document.createElement('div');
+    div.className = 'slot-item' + (isActive ? ' active' : '');
+    div.onclick = (e) => { if (!e.target.classList.contains('slot-remove')) setActiveSlot(i); };
+
+    const timeEl = document.createElement('span');
+    timeEl.className = 'slot-time' + (t == null ? ' unmarked' : '');
+    timeEl.textContent = t != null
+      ? `${fmt(start)} → ${fmt(end)}  (${(end - start).toFixed(2)}s)`
+      : `not marked → 0.00s → ${fmt(Math.min(3, dur))}`;
+
+    const numEl = document.createElement('span');
+    numEl.className = 'slot-num';
+    numEl.textContent = `${i + 1}.`;
+
+    div.appendChild(numEl);
+    div.appendChild(timeEl);
+
+    if (state.markSlots.length > 1) {
+      const rm = document.createElement('button');
+      rm.className = 'btn slot-remove';
+      rm.textContent = '×';
+      rm.title = 'Remove slot';
+      rm.onclick = (e) => { e.stopPropagation(); removeSlot(i); };
+      div.appendChild(rm);
+    }
+
+    list.appendChild(div);
+  });
+
+  updateMarkIndicator();
+}
+
+function updateMarkIndicator() {
+  const v    = el('video');
+  const ind  = el('mark-indicator');
+  const span = el('mark-span');
+  const t    = state.markSlots[state.activeSlot];
+  if (t == null || !isFinite(v.duration)) {
+    ind.style.display  = 'none';
+    span.style.display = 'none';
+    return;
+  }
+  const dur      = v.duration;
+  const startPct = t / dur * 100;
+  const endPct   = Math.min(t + 3, dur) / dur * 100;
+  ind.style.display  = 'block';
+  ind.style.left     = `${startPct}%`;
+  span.style.display = 'block';
+  span.style.left    = `${startPct}%`;
+  span.style.width   = `${endPct - startPct}%`;
+}
+
+// ── Decisions ─────────────────────────────────────────────────────────────────
+async function takeClip() {
+  const clip    = state.clips[state.current];
+  const primary = state.markSlots[0] ?? 0;
+  const extras  = state.markSlots.slice(1).map(t => t ?? 0);
+  await saveSelection(clip.filename, primary, true, extras);
+  if (state.current < state.clips.length - 1) {
+    goToClip(state.current + 1);
+  } else {
+    updateDecisionBadge();
+  }
+}
+
+async function skipClip() {
+  const clip = state.clips[state.current];
+  await saveSelection(clip.filename, null, false);
+  if (state.current < state.clips.length - 1) {
+    goToClip(state.current + 1);
+  } else {
+    updateDecisionBadge();
+  }
+}
+
+async function saveSelection(filename, startTime, enabled, extraStarts = []) {
+  state.selections[filename] = { filename, start_time: startTime, enabled, extra_starts: extraStarts };
+  updateQueueItem(filename);
+  updateStats();
+  updateDecisionBadge();
+
+  try {
+    await api('POST', '/api/select', { filename, start_time: startTime, enabled, extra_starts: extraStarts });
+  } catch (e) {
+    console.warn('saveSelection error:', e);
+  }
+}
+
+function updateDecisionBadge() {
+  const clip   = state.clips[state.current];
+  const sel    = state.selections[clip.filename];
+  const badge  = el('clip-badge');
+  badge.className = '';
+  if (!sel) return;
+  if (sel.enabled) {
+    const n = 1 + (sel.extra_starts || []).length;
+    badge.className = 'taken';
+    badge.textContent = n > 1 ? `✓ TAKE ×${n}` : '✓ TAKE';
+  } else {
+    badge.className = 'skipped';
+    badge.textContent = '✗ SKIP';
+  }
+}
+
+// ── Video controls ────────────────────────────────────────────────────────────
+function togglePlay() {
+  const v = el('video');
+  v.paused ? v.play() : v.pause();
+}
+
+function seek(delta) {
+  const v = el('video');
+  if (!isFinite(v.duration)) return;
+  v.currentTime = Math.max(0, Math.min(v.duration, v.currentTime + delta));
+}
+
+function seekFrame(frames) {
+  const v = el('video');
+  if (!isFinite(v.duration)) return;
+  if (!v.paused) v.pause();
+  v.currentTime = Math.max(0, Math.min(v.duration, v.currentTime + frames / 30));
+}
+
+// ── Queue ─────────────────────────────────────────────────────────────────────
+const DAYS_SHORT_PL = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+
+function clipDay(clip) {
+  // Apply 5 AM cutoff: clips before 5 AM belong to the previous day.
+  const dt = new Date(clip.modified || '');
+  if (isNaN(dt)) return (clip.modified || '').substring(0, 10);
+  if (dt.getHours() < 5) dt.setDate(dt.getDate() - 1);
+  return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
+}
+
+function buildQueueItems() {
+  const showDayCards = el('day-cards-cb') ? el('day-cards-cb').checked : true;
+  const items = [{ type: 'intro' }];
+  let lastDay = null;
+  let isFirstDay = true;
+  state.clips.forEach((clip, i) => {
+    const day = clipDay(clip);
+    if (day && day !== lastDay) {
+      // Skip the first day card when a title card precedes the clips.
+      if (showDayCards && (!isFirstDay || !state.projectTitle)) {
+        items.push({ type: 'day', date: day });
+      }
+      lastDay = day;
+      isFirstDay = false;
+    }
+    items.push({ type: 'clip', clip, clipIdx: i });
+  });
+  items.push({ type: 'end' });
+  return items;
+}
+
+function formatDayTile(dateStr) {
+  try {
+    const [y, m, d] = dateStr.split('-');
+    const dt  = new Date(`${dateStr}T12:00:00`);
+    const wd  = dt.getDay();                          // 0=Sun
+    const idx = wd === 0 ? 6 : wd - 1;               // Mon=0
+    return { top: `${d}-${m}`, bottom: DAYS_SHORT_PL[idx] };
+  } catch(e) {
+    return { top: dateStr, bottom: '' };
+  }
+}
+
+function renderQueue() {
+  const container = el('queue-scroll');
+  container.innerHTML = '';
+  const hasTitle = !!state.projectTitle;
+
+  buildQueueItems().forEach(item => {
+    if (item.type === 'clip') {
+      const i   = item.clipIdx;
+      const div = document.createElement('div');
+      div.className = 'q-item';
+      div.id        = `q-${i}`;
+      div.title     = item.clip.filename;
+      div.innerHTML = `<span class="q-num">${String(i+1).padStart(2,'0')}</span>
+                       <span class="q-icon" id="qi-${i}">&#9675;</span>`;
+      div.onclick = () => goToClip(i);
+      container.appendChild(div);
+
+    } else if (item.type === 'intro') {
+      const div = document.createElement('div');
+      div.className = 'q-card q-card-intro' + (hasTitle ? ' has-title' : '');
+      div.id    = 'q-card-intro';
+      div.title = hasTitle ? `Intro card: ${state.projectTitle}` : 'Intro card (no title)';
+      div.innerHTML = '<span style="font-size:11px">&#9654;</span><span>INTRO</span>';
+      container.appendChild(div);
+
+    } else if (item.type === 'day') {
+      const { top, bottom } = formatDayTile(item.date);
+      const div = document.createElement('div');
+      div.className = 'q-card q-card-day';
+      div.id        = `q-card-day-${item.date}`;
+      div.title     = item.date;
+      div.innerHTML = `<span>${top}</span><span>${bottom}</span>`;
+      container.appendChild(div);
+
+    } else if (item.type === 'end') {
+      const div = document.createElement('div');
+      div.className = 'q-card q-card-end';
+      div.id        = 'q-card-end';
+      div.title     = 'End card (The End)';
+      div.innerHTML = '<span style="font-size:11px">&#9632;</span><span>END</span>';
+      container.appendChild(div);
+    }
+  });
+
+  // Apply saved statuses
+  state.clips.forEach(clip => updateQueueItem(clip.filename));
+  updateQueueHighlight();
+}
+
+function updateQueueItem(filename) {
+  const idx = state.clips.findIndex(c => c.filename === filename);
+  if (idx < 0) return;
+  const div  = el(`q-${idx}`);
+  const icon = el(`qi-${idx}`);
+  if (!div) return;
+  const sel = state.selections[filename];
+  const ps  = state.previewStatus[filename];  // 'ready'|'working'|'pending'|'error'|undefined
+  div.className = 'q-item';
+
+  // Preview status class (opacity layer)
+  if (ps === 'working') div.classList.add('preview-working');
+  else if (ps === 'pending') div.classList.add('preview-pending');
+  else if (ps === 'error')   div.classList.add('preview-error');
+
+  // Selection icon
+  if (!sel) {
+    icon.textContent = ps === 'working' ? '⟳' : ps === 'pending' ? '·' : '○';
+  } else if (sel.enabled) {
+    div.classList.add('taken');
+    const n = 1 + (sel.extra_starts || []).length;
+    icon.textContent = n > 1 ? `×${n}` : '✓';
+  } else {
+    div.classList.add('skipped');
+    icon.textContent = '✗';
+  }
+  if (idx === state.current) div.classList.add('current');
+}
+
+function updateQueueHighlight() {
+  // Remove 'current' from all, add to current
+  document.querySelectorAll('.q-item.current').forEach(d => d.classList.remove('current'));
+  const cur = el(`q-${state.current}`);
+  if (cur) {
+    cur.classList.add('current');
+    cur.scrollIntoView({ block: 'nearest', inline: 'center' });
+  }
+}
+
+function updateStats() {
+  let totalSlots = 0;
+  for (const sel of Object.values(state.selections)) {
+    if (sel.enabled) totalSlots += 1 + (sel.extra_starts || []).length;
+  }
+  el('stat-count').textContent = totalSlots;
+  el('stat-dur').textContent   = (totalSlots * 3).toFixed(0);
+  el('export-btn').disabled    = totalSlots === 0;
+  updateMusicBar();
+}
+
+// ── Music bar ─────────────────────────────────────────────────────────────────
+// Scale: 1 tile = 3 seconds = 40px (36px tile + 4px gap)
+const PX_PER_3S = 40;
+
+// Colours for tracks (hue offsets, distinct and soft)
+const MUSIC_HUES = [210, 30, 140, 280, 60, 170, 320, 90];
+
+function renderMusicBar() {
+  const row = el('music-row');
+  if (!state.musicTracks.length) { row.style.display = 'none'; return; }
+  row.style.display = 'flex';
+
+  const container = el('music-scroll');
+  container.innerHTML = '';
+
+  state.musicTracks.forEach((track, i) => {
+    const hue = MUSIC_HUES[i % MUSIC_HUES.length];
+    const div = document.createElement('div');
+    div.className = 'music-block';
+    div.id = `music-${i}`;
+    div.style.background = `hsl(${hue}, 45%, 22%)`;
+    div.style.borderColor = `hsl(${hue}, 55%, 40%)`;
+    const name = track.filename.replace(/\.[^.]+$/, '');
+    const nameEl = document.createElement('span');
+    nameEl.className = 'music-name';
+    nameEl.textContent = name;
+    div.appendChild(nameEl);
+    div.title = `${track.filename}  (${track.duration.toFixed(1)}s)`;
+    container.appendChild(div);
+  });
+
+  updateMusicBar();
+}
+
+function updateMusicBar() {
+  if (!state.musicTracks.length) return;
+
+  // Count selected clip slots
+  let selectedSlots = 0;
+  for (const sel of Object.values(state.selections)) {
+    if (sel.enabled) selectedSlots += 1 + (sel.extra_starts || []).length;
+  }
+
+  // Scale: 1 selected clip slot = 3s = PX_PER_3S px
+  // So pxPerSec = PX_PER_3S / 3
+  const pxPerSec = PX_PER_3S / 3;
+
+  state.musicTracks.forEach((track, i) => {
+    const div = el(`music-${i}`);
+    if (!div) return;
+    const w = Math.max(8, Math.round(track.duration * pxPerSec));
+    div.style.width = w + 'px';
+  });
+}
+
+function bindScrollSync() {
+  const q = el('queue-scroll');
+  const m = el('music-scroll');
+  if (!q || !m) return;
+
+  let syncingFromQ = false, syncingFromM = false;
+
+  q.addEventListener('scroll', () => {
+    if (syncingFromM) return;
+    syncingFromQ = true;
+    m.scrollLeft = q.scrollLeft;
+    syncingFromQ = false;
+  });
+
+  m.addEventListener('scroll', () => {
+    if (syncingFromQ) return;
+    syncingFromM = true;
+    q.scrollLeft = m.scrollLeft;
+    syncingFromM = false;
+  });
+
+  m.addEventListener('wheel', (e) => {
+    if (e.deltaY === 0) return;
+    e.preventDefault();
+    m.scrollLeft += e.deltaY;
+  }, { passive: false });
+}
+
+// ── Export ────────────────────────────────────────────────────────────────────
+async function exportFilm() {
+  const btn = el('export-btn');
+  btn.disabled = true;
+
+  let r;
+  try {
+    r = await api('POST', '/api/export', {
+      title:            el('film-title').value.trim(),
+      subtitle:         el('film-subtitle').value.trim(),
+      include_day_cards: el('day-cards-cb').checked,
+    });
+  } catch (e) {
+    alert(`Export error: ${e.message}`);
+    btn.disabled = false;
+    return;
+  }
+
+  if (r.error) {
+    alert(r.error);
+    updateStats();
+    return;
+  }
+
+  state.lastExportName  = r.output || '';
+  state.exportStartTime = null;
+  state.etaSamples      = [];
+
+  // Show progress, expand layout
+  el('progress-wrap').style.display = 'flex';
+  el('progress-text').className = '';
+  el('progress-text').textContent = 'Starting...';
+  el('progress-eta').textContent = '';
+  el('queue-footer').classList.add('exporting');
+
+  if (state.exportPolling) clearInterval(state.exportPolling);
+  state.exportPolling = setInterval(pollExport, 600);
+}
+
+function fmtEta(sec) {
+  if (!isFinite(sec) || sec < 1) return '';
+  const m = Math.floor(sec / 60);
+  const s = Math.round(sec % 60);
+  return m > 0 ? `~${m}m ${s}s` : `~${s}s`;
+}
+
+async function pollExport() {
+  let data;
+  try {
+    data = await api('GET', '/api/export/status');
+  } catch (e) {
+    return;
+  }
+
+  const pct = data.percent || 0;
+  el('progress-bar-inner').style.width = `${pct}%`;
+
+  // ETA: record only distinct pct transitions (not every poll).
+  // dt between samples = real server processing time, not polling interval.
+  // When pct is stuck (e.g. during long concat): display unchanged, no growing ETA.
+  if (pct > 0 && pct < 100) {
+    const prev = state.etaSamples[state.etaSamples.length - 1];
+    if (!prev || prev.pct !== pct) {
+      state.etaSamples.push({ t: Date.now(), pct });
+      if (state.etaSamples.length > 6) state.etaSamples.shift();
+      if (state.etaSamples.length >= 2) {
+        const first = state.etaSamples[0];
+        const last  = state.etaSamples[state.etaSamples.length - 1];
+        const dpct  = last.pct - first.pct;
+        const dt    = (last.t - first.t) / 1000;
+        if (dpct > 0 && dt > 0) {
+          const eta = (100 - pct) * dt / dpct;
+          el('progress-eta').textContent = fmtEta(eta);
+        }
+      }
+    }
+    // pct unchanged: don't touch display
+  }
+
+  if (data.status === 'done') {
+    clearInterval(state.exportPolling);
+    state.exportPolling = null;
+    el('queue-footer').classList.remove('exporting');
+    el('progress-eta').textContent = '';
+    el('progress-text').className = 'done';
+    const outName = data.output || state.lastExportName;
+    const link = outName
+      ? ` <a href="/api/output/${encodeURIComponent(outName)}" target="_blank" style="color:var(--green)">Open \u2197</a>`
+      : '';
+    el('progress-text').innerHTML = `Done!${link}`;
+    el('export-btn').disabled = false;
+  } else if (data.status === 'error') {
+    clearInterval(state.exportPolling);
+    state.exportPolling = null;
+    el('queue-footer').classList.remove('exporting');
+    el('progress-eta').textContent = '';
+    el('progress-text').className = 'error';
+    el('progress-text').textContent = data.progress || 'Error';
+    el('export-btn').disabled = false;
+  } else {
+    el('progress-text').textContent = data.progress || '';
+  }
+}
+
+// ── Select all / Clear all ────────────────────────────────────────────────────
+async function selectAll() {
+  const promises = [];
+  for (const clip of state.clips) {
+    const sel   = state.selections[clip.filename];
+    const start = (sel && sel.start_time != null) ? sel.start_time : 0;
+    const extra = (sel && sel.extra_starts) || [];
+    state.selections[clip.filename] = { filename: clip.filename, start_time: start, enabled: true, extra_starts: extra };
+    updateQueueItem(clip.filename);
+    promises.push(api('POST', '/api/select', state.selections[clip.filename]));
+  }
+  updateStats();
+  updateDecisionBadge();
+  await Promise.all(promises);
+}
+
+async function clearCache() {
+  if (!confirm('Delete all cached clips and title cards?\nNext export will re-encode everything from scratch.')) return;
+  const btn = el('clear-cache-btn');
+  btn.disabled = true;
+  try {
+    const r = await api('POST', '/api/clear-cache', {});
+    btn.textContent = `\u2713 cleared (${r.deleted} files)`;
+    setTimeout(() => { btn.innerHTML = '\u{1F5D1} cache'; btn.disabled = false; }, 3000);
+  } catch (e) {
+    alert(`Error: ${e.message}`);
+    btn.disabled = false;
+  }
+}
+
+async function clearAll() {
+  const promises = [];
+  for (const clip of state.clips) {
+    state.selections[clip.filename] = { filename: clip.filename, start_time: null, enabled: false, extra_starts: [] };
+    updateQueueItem(clip.filename);
+    promises.push(api('POST', '/api/select', state.selections[clip.filename]));
+  }
+  updateStats();
+  updateDecisionBadge();
+  await Promise.all(promises);
+}
+
+// ── Queue horizontal scroll via mouse wheel ───────────────────────────────────
+el('queue-scroll').addEventListener('wheel', (e) => {
+  if (e.deltaY === 0) return;
+  e.preventDefault();
+  el('queue-scroll').scrollLeft += e.deltaY;
+}, { passive: false });
+
+// ── Autoplay ──────────────────────────────────────────────────────────────────
+function bindAutoplay() {
+  const cb = el('autoplay-cb');
+  cb.checked = localStorage.getItem('clipcutter_autoplay') === '1';
+  cb.addEventListener('change', () => {
+    localStorage.setItem('clipcutter_autoplay', cb.checked ? '1' : '0');
+  });
+}
+
+// ── Day cards toggle ───────────────────────────────────────────────────────────
+function bindDayCards() {
+  const cb = el('day-cards-cb');
+  cb.checked = localStorage.getItem('clipcutter_day_cards') !== '0';  // default: on
+  cb.addEventListener('change', () => {
+    localStorage.setItem('clipcutter_day_cards', cb.checked ? '1' : '0');
+    buildQueue();  // rebuild timeline preview immediately
+  });
+}
+
+// ── Title / subtitle auto-save ────────────────────────────────────────────────
+function bindTitleFields() {
+  let timer = null;
+  function save() {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      const title    = el('film-title').value.trim();
+      const subtitle = el('film-subtitle').value.trim();
+      state.projectTitle    = title;
+      state.projectSubtitle = subtitle;
+      api('POST', '/api/settings', { title, subtitle });
+      // Update intro tile appearance live
+      const introTile = el('q-card-intro');
+      if (introTile) {
+        introTile.classList.toggle('has-title', !!title);
+        introTile.title = title ? `Intro card: ${title}` : 'Intro card (no title)';
+      }
+    }, 600);
+  }
+  el('film-title').addEventListener('input', save);
+  el('film-subtitle').addEventListener('input', save);
+}
+
+// ── Keyboard shortcuts ────────────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  // Don't interfere with text inputs
+  if (['INPUT', 'TEXTAREA'].includes(e.target.tagName)) {
+    if (e.key === 'Enter' && e.target.id === 'folder-input') loadFolder();
+    return;
+  }
+  if (el('app').style.display === 'none') return;
+
+  switch (e.key) {
+    case ' ':        e.preventDefault(); togglePlay();                    break;
+    case 's':
+    case 'S':        markStart();                                         break;
+    case 'ArrowLeft':  e.preventDefault(); seek(-1);                     break;
+    case 'ArrowRight': e.preventDefault(); seek(1);                      break;
+    case ',':        seekFrame(-1);                                       break;
+    case '.':        seekFrame(1);                                        break;
+    case 'Enter':    e.preventDefault(); takeClip();                     break;
+    case 'Delete':   skipClip();                                         break;
+    case 'PageUp':   e.preventDefault(); goToClip(state.current - 1);   break;
+    case 'PageDown': e.preventDefault(); goToClip(state.current + 1);   break;
+  }
+});
+
+// ── KB help ───────────────────────────────────────────────────────────────────
+function toggleKbHelp() {
+  const h = el('kb-help');
+  h.style.display = h.style.display === 'block' ? 'none' : 'block';
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+init().catch(e => console.error('Init error:', e));
+</script>
+</body>
+</html>
