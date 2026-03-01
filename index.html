@@ -156,7 +156,7 @@
 
     #video-wrap {
       height: 100%;
-      aspect-ratio: 9 / 16;
+      aspect-ratio: 9 / 16;  /* overridden dynamically for landscape clips */
       background: #000;
       display: flex; align-items: center; justify-content: center;
       position: relative;
@@ -370,13 +370,9 @@
     #queue-scroll {
       display: flex;
       gap: 4px;
-      overflow-x: auto;
-      padding-bottom: 4px;
-      scroll-behavior: smooth;
+      padding-bottom: 2px;
+      min-width: max-content;
     }
-    #queue-scroll::-webkit-scrollbar { height: 4px; }
-    #queue-scroll::-webkit-scrollbar-track { background: var(--bg); }
-    #queue-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
     .q-item {
       flex-shrink: 0;
@@ -418,15 +414,6 @@
     #stats { color: var(--dim); font-size: 11px; margin-right: 4px; }
     #stats strong { color: var(--text); }
 
-    #queue-footer input[type="text"] {
-      flex: 1;
-      min-width: 80px;
-      margin-bottom: 0;
-      background: #151515;
-      border-color: #333;
-      padding: 5px 8px;
-      font-size: 12px;
-    }
 
     /* Export progress */
     #export-section {
@@ -503,29 +490,44 @@
     }
 
     /* Music bar */
-    #music-row {
-      display: none;
-      align-items: center;
+    #timeline-area {
+      display: flex;
+      align-items: flex-start;
       gap: 6px;
-      margin-top: 3px;
     }
-    #music-label {
+    #timeline-labels {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      flex-shrink: 0;
+    }
+    .timeline-label {
       font-size: 10px;
       color: var(--dim);
       white-space: nowrap;
-      flex-shrink: 0;
-    }
-    #music-scroll {
+      padding-top: 4px;
+      height: 36px;
       display: flex;
-      gap: 2px;
-      overflow-x: auto;
+      align-items: center;
+    }
+    #music-label {
       height: 22px;
+    }
+    #queue-viewport {
       flex: 1;
+      overflow-x: auto;
       scroll-behavior: smooth;
     }
-    #music-scroll::-webkit-scrollbar { height: 3px; }
-    #music-scroll::-webkit-scrollbar-track { background: var(--bg); }
-    #music-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 1px; }
+    #queue-viewport::-webkit-scrollbar { height: 4px; }
+    #queue-viewport::-webkit-scrollbar-track { background: var(--bg); }
+    #queue-viewport::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+    #music-scroll {
+      display: flex;
+      gap: 4px;  /* match #queue-scroll gap to keep timelines aligned */
+      min-width: max-content;
+      padding-bottom: 2px;
+      height: 22px;
+    }
     .music-block {
       flex-shrink: 0;
       height: 22px;
@@ -538,6 +540,36 @@
       cursor: default;
     }
     .music-block:hover { filter: brightness(1.25); }
+    .music-drag-handle {
+      position: absolute;
+      right: 0;
+      top: 0;
+      width: 7px;
+      height: 100%;
+      cursor: ew-resize;
+      background: rgba(255,255,255,0.15);
+      border-radius: 0 3px 3px 0;
+      flex-shrink: 0;
+      transition: background 0.1s;
+    }
+    .music-drag-handle:hover, .music-block.dragging .music-drag-handle {
+      background: rgba(255,255,255,0.35);
+    }
+    .music-block { position: relative; }
+    #music-gap {
+      flex-shrink: 0;
+      height: 22px;
+      border: 1px dashed var(--border);
+      border-radius: 3px;
+      display: none;
+      align-items: center;
+      padding: 0 5px;
+      overflow: hidden;
+      color: var(--dim);
+      font-size: 9px;
+      white-space: nowrap;
+      opacity: 0.6;
+    }
 
     /* ── Queue card tiles (intro / day / end) ─────────────────── */
     .q-card {
@@ -557,7 +589,7 @@
       text-align: center;
     }
     .q-card-intro {
-      width: 50px;
+      width: 48px;  /* 4s × 12px/s */
       border-color: var(--accent);
       background: rgba(68,136,255,.06);
       color: var(--dim);
@@ -569,16 +601,21 @@
       color: var(--accent);
     }
     .q-card-day {
-      width: 54px;
+      width: 24px;  /* 2s × 12px/s */
       border-color: #3a3a55;
       background: rgba(80,80,160,.12);
       color: #8888bb;
     }
     .q-card-end {
-      width: 44px;
+      width: 60px;  /* 5s × 12px/s */
       border-color: #333;
       background: rgba(255,255,255,.02);
       color: #555;
+    }
+    .q-card-end:hover { filter: brightness(1.5); }
+    .q-card-end-custom {
+      border-color: #555;
+      color: #888;
     }
 
     .music-name {
@@ -594,7 +631,7 @@
     /* ── Frame preview panels ─────────────────────────────────── */
     .frame-preview-panel {
       height: 50%;
-      aspect-ratio: 9 / 16;
+      aspect-ratio: 9 / 16;  /* overridden dynamically for landscape clips */
       flex-shrink: 0;
       align-self: center;
       display: flex;
@@ -632,6 +669,79 @@
     }
     .q-card-day { cursor: pointer; }
     .q-card-day:hover { filter: brightness(1.3); }
+    .q-card-day.day-custom { outline: 1px solid var(--accent); }
+    .q-card.current { outline: 2px solid var(--accent) !important; filter: brightness(1.4); opacity: 1 !important; }
+    .q-card-intro { cursor: pointer; }
+
+    /* ── Card preview (title/day card selected in queue) ─────── */
+    #card-preview {
+      height: 100%;
+      aspect-ratio: 9 / 16;
+      background: #0a0a14;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      padding: 16px;
+      box-sizing: border-box;
+      gap: 10px;
+    }
+    #card-preview-label {
+      position: absolute;
+      top: 10px;
+      font-size: 9px;
+      letter-spacing: 2px;
+      color: var(--dim);
+      text-transform: uppercase;
+      text-align: center;
+    }
+    #card-preview-title {
+      font-size: clamp(14px, 3.5vw, 26px);
+      font-weight: bold;
+      color: #fff;
+      text-align: center;
+      word-break: break-word;
+      line-height: 1.25;
+    }
+    #card-preview-subtitle {
+      font-size: clamp(10px, 2vw, 15px);
+      color: var(--dim);
+      text-align: center;
+      word-break: break-word;
+    }
+    #card-preview-btns {
+      position: absolute;
+      bottom: 12px;
+      display: flex;
+      gap: 6px;
+    }
+
+    /* ── Day title editor modal ───────────────────────────────── */
+    #day-title-modal {
+      position: fixed; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      background: rgba(0,0,0,.55);
+      z-index: 100;
+    }
+    #day-title-modal.hidden { display: none; }
+    #day-title-modal-box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 14px 16px;
+      display: flex; flex-direction: column; gap: 8px;
+      min-width: 260px;
+    }
+    #day-title-modal-box .modal-label {
+      font-size: 11px; color: var(--dim);
+    }
+    #day-title-modal-box input {
+      width: 100%; box-sizing: border-box;
+    }
+    #day-title-modal-box .modal-btns {
+      display: flex; gap: 6px; justify-content: flex-end; margin-top: 2px;
+    }
 
     /* ── Clip size warning ────────────────────────────────────── */
     #size-warning {
@@ -692,6 +802,20 @@
   </div>
 </div>
 
+<!-- ── Card title editor modal (day / title / end card) ─────── -->
+<div id="day-title-modal" class="hidden">
+  <div id="day-title-modal-box">
+    <div class="modal-label" id="day-title-modal-label">Day card: <strong id="day-title-modal-date"></strong></div>
+    <input type="text" id="day-title-input" placeholder="Title" maxlength="60" autocomplete="off">
+    <input type="text" id="day-subtitle-input" placeholder="Subtitle" maxlength="60" autocomplete="off">
+    <div class="modal-btns">
+      <button class="btn" onclick="resetCardTitle()">Reset</button>
+      <button class="btn" onclick="closeCardModal()">Cancel</button>
+      <button class="btn btn-accent" onclick="saveCardTitleFromModal()">Save</button>
+    </div>
+  </div>
+</div>
+
 <!-- ── Main app ───────────────────────────────────────────────── -->
 <div id="app" style="display:none">
 
@@ -728,6 +852,15 @@
         <div id="video-wait">
           <div class="spinner"></div>
           <div id="video-wait-msg">Generating preview...</div>
+        </div>
+      </div>
+      <div id="card-preview" style="display:none">
+        <div id="card-preview-label"></div>
+        <div id="card-preview-title"></div>
+        <div id="card-preview-subtitle"></div>
+        <div id="card-preview-btns" style="display:none">
+          <button class="btn" id="card-preview-toggle-btn" onclick="toggleDayCardFromPreview()">✗ Skip</button>
+          <button class="btn btn-accent" id="card-preview-edit-btn" onclick="openCardEditorFromPreview()">Edit title</button>
         </div>
       </div>
       <div class="frame-preview-panel" id="frame-preview-right" style="display:none">
@@ -816,16 +949,24 @@
             <input type="checkbox" id="day-cards-cb" style="margin:0;cursor:pointer">
             day cards
           </label>
+          <label title="Show skipped clips and disabled day cards in the queue"
+                 style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:11px;color:var(--dim);user-select:none;white-space:nowrap;margin-left:8px">
+            <input type="checkbox" id="show-skipped-cb" style="margin:0;cursor:pointer">
+            show skipped
+          </label>
         </div>
-        <div id="queue-scroll"></div>
-        <div id="music-row">
-          <div id="music-label">&#9835; Music:</div>
-          <div id="music-scroll"></div>
+        <div id="timeline-area">
+          <div id="timeline-labels">
+            <div class="timeline-label">&#127916; Clips:</div>
+            <div class="timeline-label" id="music-label">&#9835; Music:</div>
+          </div>
+          <div id="queue-viewport">
+            <div id="queue-scroll"></div>
+            <div id="music-scroll"></div>
+          </div>
         </div>
         <div id="queue-footer">
-          <div id="stats">Selected: <strong id="stat-count">0</strong> clips ~<strong id="stat-dur">0</strong>s clips | movie ~<strong id="stat-total-dur">0</strong>s</div>
-          <input type="text" id="film-title" placeholder="Title..." maxlength="60" autocomplete="off">
-          <input type="text" id="film-subtitle" placeholder="Subtitle..." maxlength="80" autocomplete="off">
+          <div id="stats">Selected: <strong id="stat-count">0</strong> clips ~<strong id="stat-dur">0</strong>s clips | movie ~<strong id="stat-total-dur">0</strong>s (<span id="stat-total-dur-hms">0m 0s</span>)</div>
           <div id="export-section">
             <div id="progress-wrap">
               <div id="progress-bar-outer"><div id="progress-bar-inner"></div></div>
@@ -836,6 +977,9 @@
             </div>
             <button class="btn btn-accent" id="export-btn" onclick="exportFilm()" disabled>
               &#9654; EXPORT
+            </button>
+            <button class="btn" id="cancel-export-btn" onclick="cancelExport()" style="display:none;color:var(--red)">
+              &#10005; Cancel
             </button>
             <button class="btn" id="clear-cache-btn" onclick="clearCache()" title="Delete all cached clips and cards — forces full re-encode on next export" style="color:var(--dim);font-size:11px">
               &#128465; clear cache
@@ -867,7 +1011,11 @@ const state = {
   selections: {},           // filename -> {filename, start_time, enabled, extra_starts:[]}
   previewStatus: {},        // filename -> 'ready'|'working'|'pending'|'error'
   disabledDayCards: new Set(), // set of 'YYYY-MM-DD' strings
+  dayCardTitles: {},           // date -> {title, subtitle}
+  endCardTitle: '',            // custom end card title ('' = 'The End')
+  endCardSubtitle: '',         // custom end card subtitle
   current: 0,
+  currentCard: null,           // null | {type:'intro'} | {type:'day', date:'YYYY-MM-DD'}
   markSlots: [null],        // array of start times; null = not marked (use 0.0)
   activeSlot: 0,            // which slot S-key will update
   exportPolling: null,
@@ -931,9 +1079,11 @@ async function init() {
 
   const s = await api('GET', '/api/state');
   if (s.loaded) {
-    state.folder        = s.folder        || '';
-    state.projectTitle  = s.title         || '';
-    state.projectSubtitle = s.subtitle    || '';
+    state.folder          = s.folder          || '';
+    state.projectTitle    = s.title           || '';
+    state.projectSubtitle = s.subtitle        || '';
+    state.endCardTitle    = s.end_card_title  || '';
+    state.endCardSubtitle = s.end_card_subtitle || '';
     await loadClipsFromServer();
     showApp();
   } else {
@@ -960,9 +1110,11 @@ async function loadFolder() {
       return;
     }
     const s = await api('GET', '/api/state');
-    state.folder          = s.folder   || '';
-    state.projectTitle    = s.title    || '';
-    state.projectSubtitle = s.subtitle || '';
+    state.folder          = s.folder             || '';
+    state.projectTitle    = s.title              || '';
+    state.projectSubtitle = s.subtitle           || '';
+    state.endCardTitle    = s.end_card_title     || '';
+    state.endCardSubtitle = s.end_card_subtitle  || '';
     await loadClipsFromServer();
     el('overlay-scanning').classList.add('hidden');
     showApp();
@@ -988,6 +1140,9 @@ async function loadClipsFromServer() {
   state.clips            = clipsData.clips    || [];
   state.selections       = selData.selections  || {};
   state.disabledDayCards = new Set(selData.disabled_day_cards || []);
+  state.dayCardTitles    = selData.day_card_titles || {};
+  state.endCardTitle     = selData.end_card_title    || state.endCardTitle;
+  state.endCardSubtitle  = selData.end_card_subtitle || state.endCardSubtitle;
   state.musicTracks      = musicData.tracks   || [];
 }
 
@@ -995,19 +1150,18 @@ async function showApp() {
   el('overlay-loader').classList.add('hidden');
   el('overlay-scanning').classList.add('hidden');
   el('app').style.display = 'flex';
-  el('film-title').value    = state.projectTitle;
-  el('film-subtitle').value = state.projectSubtitle;
   el('nav-folder').textContent = state.folder ? '\uD83D\uDCC2 ' + state.folder : '';
   bindAutoplay();
   bindFramesPreview();
-  bindDayCards();   // must run before renderQueue so checkbox state is set
+  bindDayCards();     // must run before renderQueue so checkbox state is set
+  bindShowSkipped();  // must run before renderQueue so checkbox state is set
   renderQueue();
   renderMusicBar();
   updateStats();
-  goToClip(0);
+  const firstTaken = state.clips.findIndex(c => state.selections[c.filename]?.enabled);
+  goToClip(firstTaken >= 0 ? firstTaken : 0);
   bindVideo();
-  bindTitleFields();
-  bindScrollSync();
+
   pollPreviewStatus();  // start polling – stops automatically when all ready
 
   // Resume export progress bar if export is already running (e.g. after page refresh)
@@ -1022,6 +1176,7 @@ async function showApp() {
       el('progress-eta').textContent = '';
       el('queue-footer').classList.add('exporting');
       el('export-btn').disabled = true;
+      el('cancel-export-btn').style.display = '';
       if (state.exportPolling) clearInterval(state.exportPolling);
       state.exportPolling = setInterval(pollExport, 600);
     }
@@ -1165,6 +1320,17 @@ async function pollPreviewStatus() {
 function goToClip(idx) {
   if (idx < 0 || idx >= state.clips.length) return;
 
+  // Exit card preview mode if active
+  if (state.currentCard) {
+    state.currentCard = null;
+    el('card-preview').style.display   = 'none';
+    el('video-wrap').style.display     = '';
+    el('timeline-row').style.display   = '';
+    el('frame-controls').style.display = '';
+    el('action-row').style.display     = '';
+    applyFramePreviewVisibility();
+  }
+
   // Auto-save mark changes when navigating away from a "taken" clip
   if (idx !== state.current) {
     const prev    = state.clips[state.current];
@@ -1178,6 +1344,10 @@ function goToClip(idx) {
 
   state.current = idx;
   const clip = state.clips[idx];
+
+  // Adapt video-wrap aspect ratio to clip orientation
+  const clipLandscape = (clip.width || 0) > (clip.height || 0);
+  el('video-wrap').style.aspectRatio = clipLandscape ? '16 / 9' : '9 / 16';
 
   checkClipSize(clip);
 
@@ -1223,7 +1393,76 @@ function goToClip(idx) {
   updateQueueHighlight();
 }
 
+// ── Card preview (title card / day card selected) ─────────────────────────────
+function goToCard(cardInfo) {
+  state.currentCard = cardInfo;
+  el('video').pause();
+  el('video-wrap').style.display     = 'none';
+  el('frame-preview-left').style.display  = 'none';
+  el('frame-preview-right').style.display = 'none';
+  el('timeline-row').style.display   = 'none';
+  el('frame-controls').style.display = 'none';
+  el('action-row').style.display     = 'none';
+  el('size-warning').classList.remove('show');
+  el('card-preview').style.display   = 'flex';
+  updateCardPreview();
+  updateNav();
+  updateQueueHighlight();
+}
+
+function updateCardPreview() {
+  const card = state.currentCard;
+  if (!card) return;
+  const toggleBtn = el('card-preview-toggle-btn');
+  if (card.type === 'intro') {
+    el('card-preview-label').textContent    = 'TITLE CARD';
+    el('card-preview-title').textContent    = state.projectTitle    || '(no title set)';
+    el('card-preview-subtitle').textContent = state.projectSubtitle || '';
+    el('card-preview-btns').style.display   = 'flex';
+    toggleBtn.style.display = 'none';
+  } else if (card.type === 'day') {
+    const ct       = state.dayCardTitles[card.date] || null;
+    const { top, bottom } = formatDayTile(card.date, ct);
+    const disabled = state.disabledDayCards.has(card.date);
+    el('card-preview-label').textContent    = `DAY CARD  \u2022  ${card.date}`;
+    el('card-preview-title').textContent    = top;
+    el('card-preview-subtitle').textContent = bottom;
+    el('card-preview-btns').style.display   = 'flex';
+    toggleBtn.style.display = '';
+    toggleBtn.textContent = disabled ? '✓ Enable' : '✗ Skip';
+    toggleBtn.style.color = disabled ? '' : 'var(--red)';
+  } else if (card.type === 'end') {
+    el('card-preview-label').textContent    = 'END CARD';
+    el('card-preview-title').textContent    = state.endCardTitle    || 'The End';
+    el('card-preview-subtitle').textContent = state.endCardSubtitle || '';
+    el('card-preview-btns').style.display   = 'flex';
+    toggleBtn.style.display = 'none';
+  }
+}
+
+function toggleDayCardFromPreview() {
+  if (!state.currentCard || state.currentCard.type !== 'day') return;
+  const date = state.currentCard.date;
+  toggleDayCard(date, state.disabledDayCards.has(date));
+}
+
 function updateNav() {
+  if (state.currentCard) {
+    if (state.currentCard.type === 'intro') {
+      el('nav-counter').textContent  = 'Title Card';
+      el('nav-filename').textContent = state.projectTitle || '(no title)';
+    } else if (state.currentCard.type === 'end') {
+      el('nav-counter').textContent  = 'End Card';
+      el('nav-filename').textContent = state.endCardTitle || 'The End';
+    } else {
+      const ct = state.dayCardTitles[state.currentCard.date];
+      el('nav-counter').textContent  = `Day Card: ${state.currentCard.date}`;
+      el('nav-filename').textContent = ct?.title || state.currentCard.date;
+    }
+    el('prev-btn').disabled = true;
+    el('next-btn').disabled = true;
+    return;
+  }
   const clip = state.clips[state.current];
   el('nav-counter').textContent = `Clip ${state.current + 1} / ${state.clips.length}`;
   el('nav-filename').textContent = clip.filename;
@@ -1401,6 +1640,11 @@ function seekFrame(frames) {
 // ── Queue ─────────────────────────────────────────────────────────────────────
 const DAYS_SHORT_PL = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
 
+function fmtMinSec(secs) {
+  const s = Math.round(secs);
+  return `${Math.floor(s / 60)}m ${s % 60}s`;
+}
+
 function clipDay(clip) {
   // Apply 5 AM cutoff: clips before 5 AM belong to the previous day.
   const dt = new Date(clip.modified || '');
@@ -1421,18 +1665,24 @@ function daysWithEnabledClips() {
 
 function buildQueueItems() {
   const showDayCards  = el('day-cards-cb') ? el('day-cards-cb').checked : true;
+  const showSkipped   = el('show-skipped-cb') ? el('show-skipped-cb').checked : true;
   const enabledDays   = daysWithEnabledClips();
   const items = [{ type: 'intro' }];
   let lastDay    = null;
   let isFirstDay = true;
   state.clips.forEach((clip, i) => {
     const day = clipDay(clip);
+    const sel = state.selections[clip.filename];
+    const isSkipped = sel && !sel.enabled;
     if (day && day !== lastDay) {
       // Only show day card if at least one clip on that day is enabled
       const hasEnabled = enabledDays.has(day);
       if (showDayCards && hasEnabled && (!isFirstDay || !state.projectTitle)) {
-        const disabled = state.disabledDayCards.has(day);
-        items.push({ type: 'day', date: day, dayDisabled: disabled });
+        const disabled    = state.disabledDayCards.has(day);
+        const customTitle = state.dayCardTitles[day] || null;
+        if (showSkipped || !disabled) {
+          items.push({ type: 'day', date: day, dayDisabled: disabled, customTitle });
+        }
       }
       lastDay = day;
       isFirstDay = false;
@@ -1443,12 +1693,26 @@ function buildQueueItems() {
   return items;
 }
 
-function formatDayTile(dateStr) {
+function formatDayTile(dateStr, customTitle = null) {
+  if (customTitle) {
+    const [y, m, d] = dateStr.split('-');
+    const defaultBottom = (() => {
+      try {
+        const dt = new Date(`${dateStr}T12:00:00`);
+        const idx = dt.getDay() === 0 ? 6 : dt.getDay() - 1;
+        return DAYS_SHORT_PL[idx];
+      } catch(e) { return ''; }
+    })();
+    return {
+      top:    customTitle.title    || `${d}-${m}`,
+      bottom: customTitle.subtitle || defaultBottom,
+    };
+  }
   try {
     const [y, m, d] = dateStr.split('-');
     const dt  = new Date(`${dateStr}T12:00:00`);
-    const wd  = dt.getDay();                          // 0=Sun
-    const idx = wd === 0 ? 6 : wd - 1;               // Mon=0
+    const wd  = dt.getDay();
+    const idx = wd === 0 ? 6 : wd - 1;
     return { top: `${d}-${m}`, bottom: DAYS_SHORT_PL[idx] };
   } catch(e) {
     return { top: dateStr, bottom: '' };
@@ -1476,35 +1740,37 @@ function renderQueue() {
       const div = document.createElement('div');
       div.className = 'q-card q-card-intro' + (hasTitle ? ' has-title' : '');
       div.id    = 'q-card-intro';
-      div.title = hasTitle ? `Intro card: ${state.projectTitle}` : 'Intro card (no title)';
-      if (hasTitle) {
-        // Show thumbnail of title card first frame
-        const img = document.createElement('img');
-        img.src = '/api/title_thumbnail';
-        img.style.cssText = 'width:100%;height:100%;object-fit:cover;border-radius:3px;';
-        img.onerror = () => { img.style.display='none'; div.innerHTML += '<span style="font-size:11px">&#9654;</span><span>INTRO</span>'; };
-        div.appendChild(img);
-      } else {
-        div.innerHTML = '<span style="font-size:11px">&#9654;</span><span>INTRO</span>';
-      }
+      div.title = hasTitle
+        ? `Title card: ${state.projectTitle} – click to select, double-click to edit`
+        : 'Title card (no title) – click to select, double-click to edit';
+      div.innerHTML = `<span style="opacity:.6;font-size:8px;letter-spacing:.5px">START</span><span>${state.projectTitle || '—'}</span>`;
+      div.onclick    = () => goToCard({ type: 'intro' });
+      div.ondblclick = e => { e.preventDefault(); e.stopPropagation(); openCardEditor('intro'); };
       container.appendChild(div);
 
     } else if (item.type === 'day') {
       const { top, bottom } = formatDayTile(item.date);
       const div = document.createElement('div');
-      div.className = 'q-card q-card-day' + (item.dayDisabled ? ' day-disabled' : '');
+      div.className = 'q-card q-card-day'
+        + (item.dayDisabled  ? ' day-disabled' : '')
+        + (item.customTitle  ? ' day-custom'   : '');
       div.id        = `q-card-day-${item.date}`;
-      div.title     = item.dayDisabled ? `Day ${item.date} – skipped (click to enable)` : `Day ${item.date} – click to skip`;
+      div.title     = `${item.date} – click to select, double-click to rename`;
       div.innerHTML = `<span>${top}</span><span>${bottom}</span>`;
-      div.onclick   = () => toggleDayCard(item.date, item.dayDisabled);
+      div.onclick    = () => goToCard({ type: 'day', date: item.date });
+      div.ondblclick = e => { e.preventDefault(); e.stopPropagation(); openDayTitleEditor(item.date); };
       container.appendChild(div);
 
     } else if (item.type === 'end') {
+      const endTitle = state.endCardTitle || 'The End';
       const div = document.createElement('div');
-      div.className = 'q-card q-card-end';
-      div.id        = 'q-card-end';
-      div.title     = 'End card (The End)';
-      div.innerHTML = '<span style="font-size:11px">&#9632;</span><span>END</span>';
+      div.className  = 'q-card q-card-end' + (state.endCardTitle ? ' q-card-end-custom' : '');
+      div.id         = 'q-card-end';
+      div.title      = `End card: ${endTitle} – click to select, double-click to edit`;
+      div.style.cursor = 'pointer';
+      div.innerHTML  = `<span style="opacity:.6;font-size:8px;letter-spacing:.5px">END</span><span>${endTitle}</span>`;
+      div.onclick    = () => goToCard({ type: 'end' });
+      div.ondblclick = e => { e.preventDefault(); e.stopPropagation(); openCardEditor('end'); };
       container.appendChild(div);
     }
   });
@@ -1512,6 +1778,7 @@ function renderQueue() {
   // Apply saved statuses
   state.clips.forEach(clip => updateQueueItem(clip.filename));
   updateQueueHighlight();
+  if (state.currentCard) updateCardPreview();
 }
 
 function updateQueueItem(filename) {
@@ -1522,6 +1789,12 @@ function updateQueueItem(filename) {
   if (!div) return;
   const sel = state.selections[filename];
   const ps  = state.previewStatus[filename];  // 'ready'|'working'|'pending'|'error'|undefined
+  const isSkipped = sel && !sel.enabled;
+
+  // Show/hide based on "show skipped" toggle
+  const showSkipped = el('show-skipped-cb') ? el('show-skipped-cb').checked : true;
+  div.style.display = (!showSkipped && isSkipped) ? 'none' : '';
+
   div.className = 'q-item';
 
   // Preview status class (opacity layer)
@@ -1544,12 +1817,22 @@ function updateQueueItem(filename) {
 }
 
 function updateQueueHighlight() {
-  // Remove 'current' from all, add to current
-  document.querySelectorAll('.q-item.current').forEach(d => d.classList.remove('current'));
-  const cur = el(`q-${state.current}`);
-  if (cur) {
-    cur.classList.add('current');
-    cur.scrollIntoView({ block: 'nearest', inline: 'center' });
+  document.querySelectorAll('.q-item.current, .q-card.current').forEach(d => d.classList.remove('current'));
+  if (state.currentCard) {
+    let cardEl = null;
+    if (state.currentCard.type === 'intro') cardEl = el('q-card-intro');
+    else if (state.currentCard.type === 'day') cardEl = el(`q-card-day-${state.currentCard.date}`);
+    else if (state.currentCard.type === 'end') cardEl = el('q-card-end');
+    if (cardEl) {
+      cardEl.classList.add('current');
+      cardEl.scrollIntoView({ block: 'nearest', inline: 'center' });
+    }
+  } else {
+    const cur = el(`q-${state.current}`);
+    if (cur) {
+      cur.classList.add('current');
+      cur.scrollIntoView({ block: 'nearest', inline: 'center' });
+    }
   }
 }
 
@@ -1564,20 +1847,26 @@ function updateStats() {
   updateMusicBar();
   // totalVideoDuration is called inside updateMusicBar already, update text
   const durEl = el('stat-total-dur');
-  if (durEl) durEl.textContent = totalVideoDuration().toFixed(0);
+  if (durEl) {
+    const secs = totalVideoDuration();
+    durEl.textContent = secs.toFixed(0);
+    const hmsEl = el('stat-total-dur-hms');
+    if (hmsEl) hmsEl.textContent = fmtMinSec(secs);
+  }
 }
 
 // ── Music bar ─────────────────────────────────────────────────────────────────
 // Scale: 1 tile = 3 seconds = 40px (36px tile + 4px gap)
-const PX_PER_3S = 40;
+const PX_PER_3S = 36;  // = 1 clip tile width = 3s → 12px/sec, matches .q-item
 
 // Colours for tracks (hue offsets, distinct and soft)
 const MUSIC_HUES = [210, 30, 140, 280, 60, 170, 320, 90];
 
 function renderMusicBar() {
-  const row = el('music-row');
-  if (!state.musicTracks.length) { row.style.display = 'none'; return; }
-  row.style.display = 'flex';
+  const hasTracks = !!state.musicTracks.length;
+  el('music-label').style.display  = hasTracks ? '' : 'none';
+  el('music-scroll').style.display = hasTracks ? '' : 'none';
+  if (!hasTracks) return;
 
   const container = el('music-scroll');
   container.innerHTML = '';
@@ -1594,9 +1883,20 @@ function renderMusicBar() {
     nameEl.className = 'music-name';
     nameEl.textContent = name;
     div.appendChild(nameEl);
-    div.title = `${track.filename}  (${track.duration.toFixed(1)}s)`;
+    // Drag handle on right edge to trim track_end
+    const handle = document.createElement('div');
+    handle.className = 'music-drag-handle';
+    handle.title = 'Drag to trim track end';
+    bindMusicDragHandle(handle, i);
+    div.appendChild(handle);
+    updateMusicBlockTitle(div, track);
     container.appendChild(div);
   });
+
+  // Gap block: shows remaining silence when music is shorter than the movie
+  const gap = document.createElement('div');
+  gap.id = 'music-gap';
+  container.appendChild(gap);
 
   updateMusicBar();
 }
@@ -1637,46 +1937,144 @@ function updateMusicBar() {
   // Scale: 1 clip tile = 3s = PX_PER_3S px → pxPerSec = PX_PER_3S / 3
   const pxPerSec = PX_PER_3S / 3;
 
+  let musicTotal = 0;
   state.musicTracks.forEach((track, i) => {
     const div = el(`music-${i}`);
     if (!div) return;
-    const w = Math.max(8, Math.round(track.duration * pxPerSec));
+    const effectiveDur = (track.track_end != null && track.track_end < track.duration)
+      ? track.track_end : track.duration;
+    const w = Math.max(8, Math.round(effectiveDur * pxPerSec));
     div.style.width = w + 'px';
+    updateMusicBlockTitle(div, track);
+    musicTotal += effectiveDur;
   });
 
   // Update total duration display on stats
   const totalDur = totalVideoDuration();
   const durEl = el('stat-total-dur');
-  if (durEl) durEl.textContent = totalDur.toFixed(0);
+  if (durEl) {
+    durEl.textContent = totalDur.toFixed(0);
+    const hmsEl = el('stat-total-dur-hms');
+    if (hmsEl) hmsEl.textContent = fmtMinSec(totalDur);
+  }
+
+  // Show gap block when music ends before the movie
+  const gapEl = el('music-gap');
+  if (gapEl) {
+    const remaining = totalDur - musicTotal;
+    if (remaining > 1) {
+      const gapW = Math.round(remaining * pxPerSec);
+      gapEl.style.display = 'flex';
+      gapEl.style.width = gapW + 'px';
+      gapEl.textContent = `+${remaining.toFixed(0)}s silence`;
+      gapEl.title = `Music ends ${remaining.toFixed(1)}s before movie ends — room for another track`;
+    } else {
+      gapEl.style.display = 'none';
+    }
+  }
 }
 
-function bindScrollSync() {
-  const q = el('queue-scroll');
-  const m = el('music-scroll');
-  if (!q || !m) return;
+function updateMusicBlockTitle(div, track) {
+  const effectiveDur = (track.track_end != null && track.track_end < track.duration)
+    ? track.track_end : track.duration;
+  const trimmed = effectiveDur < track.duration - 0.5;
+  div.title = `${track.filename}  (${effectiveDur.toFixed(1)}s${trimmed ? ' / ' + track.duration.toFixed(1) + 's total' : ''})`;
+}
 
-  let syncingFromQ = false, syncingFromM = false;
+// ── Music track-end drag ──────────────────────────────────────────────────────
+// Returns sorted list of cumulative video time boundaries (seconds) for snap targets:
+// each clip boundary + day card boundaries.
+function videoBoundaries() {
+  const showDayCards = el('day-cards-cb') && el('day-cards-cb').checked;
+  const boundaries = [0];
+  let t = 0;
+  if (state.projectTitle) t += 4;  // title card
+  let lastDay = null, isFirstDay = true;
+  for (const clip of state.clips) {
+    const sel = state.selections[clip.filename];
+    if (!sel || !sel.enabled) continue;
+    const day = clipDay(clip);
+    if (day !== lastDay) {
+      if (showDayCards && !state.disabledDayCards.has(day) && (!isFirstDay || !state.projectTitle)) {
+        t += 2;
+        boundaries.push(t);
+      }
+      lastDay = day; isFirstDay = false;
+    }
+    const nSlots = 1 + (sel.extra_starts || []).length;
+    t += 3 * nSlots;
+    boundaries.push(t);
+  }
+  t += 5;  // end card
+  boundaries.push(t);
+  return boundaries;
+}
 
-  q.addEventListener('scroll', () => {
-    if (syncingFromM) return;
-    syncingFromQ = true;
-    m.scrollLeft = q.scrollLeft;
-    syncingFromQ = false;
-  });
+let _musicDragSaveTimer = null;
+function saveMusicEnds() {
+  clearTimeout(_musicDragSaveTimer);
+  _musicDragSaveTimer = setTimeout(() => {
+    const ends = {};
+    state.musicTracks.forEach(t => {
+      if (t.track_end != null && t.track_end < t.duration) ends[t.filename] = t.track_end;
+    });
+    api('POST', '/api/music_ends', { music_ends: ends }).catch(e => console.error('music_ends save error:', e));
+  }, 400);
+}
 
-  m.addEventListener('scroll', () => {
-    if (syncingFromQ) return;
-    syncingFromM = true;
-    q.scrollLeft = m.scrollLeft;
-    syncingFromM = false;
-  });
-
-  m.addEventListener('wheel', (e) => {
-    if (e.deltaY === 0) return;
+function bindMusicDragHandle(handle, trackIdx) {
+  handle.addEventListener('mousedown', e => {
     e.preventDefault();
-    m.scrollLeft += e.deltaY;
-  }, { passive: false });
+    e.stopPropagation();
+    const pxPerSec = PX_PER_3S / 3;
+    const snapTargets = videoBoundaries();  // cumulative seconds
+
+    // Compute offset of this track's start within the music timeline
+    let trackStartSec = 0;
+    for (let j = 0; j < trackIdx; j++) {
+      const t = state.musicTracks[j];
+      trackStartSec += (t.track_end != null && t.track_end < t.duration) ? t.track_end : t.duration;
+    }
+
+    const startX = e.clientX;
+    const track  = state.musicTracks[trackIdx];
+    const origEnd = track.track_end != null ? track.track_end : track.duration;
+    const div = el(`music-${trackIdx}`);
+    div.classList.add('dragging');
+
+    function onMove(e2) {
+      const dx = e2.clientX - startX;
+      const deltaSec = dx / pxPerSec;
+      let newEnd = Math.max(1, Math.min(track.duration, origEnd + deltaSec));
+
+      // Snap to video boundaries within 5px
+      const snapPx = 5 / pxPerSec;
+      const absoluteEnd = trackStartSec + newEnd;
+      for (const b of snapTargets) {
+        if (Math.abs(absoluteEnd - b) <= snapPx) {
+          newEnd = Math.max(1, Math.min(track.duration, b - trackStartSec));
+          break;
+        }
+      }
+
+      track.track_end = newEnd;
+      // Shift subsequent tracks: their positions follow automatically since
+      // updateMusicBar reads effective duration which we just changed.
+      updateMusicBar();
+    }
+
+    function onUp() {
+      div.classList.remove('dragging');
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      saveMusicEnds();
+    }
+
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
 }
+
 
 // ── Export ────────────────────────────────────────────────────────────────────
 async function exportFilm() {
@@ -1686,8 +2084,8 @@ async function exportFilm() {
   let r;
   try {
     r = await api('POST', '/api/export', {
-      title:            el('film-title').value.trim(),
-      subtitle:         el('film-subtitle').value.trim(),
+      title:            state.projectTitle,
+      subtitle:         state.projectSubtitle,
       include_day_cards: el('day-cards-cb').checked,
     });
   } catch (e) {
@@ -1712,9 +2110,18 @@ async function exportFilm() {
   el('progress-text').textContent = 'Starting...';
   el('progress-eta').textContent = '';
   el('queue-footer').classList.add('exporting');
+  el('cancel-export-btn').style.display = '';
 
   if (state.exportPolling) clearInterval(state.exportPolling);
   state.exportPolling = setInterval(pollExport, 600);
+}
+
+async function cancelExport() {
+  el('cancel-export-btn').disabled = true;
+  try {
+    await api('POST', '/api/export/cancel', {});
+  } catch(e) { /* ignore */ }
+  el('cancel-export-btn').disabled = false;
 }
 
 function fmtEta(sec) {
@@ -1761,6 +2168,7 @@ async function pollExport() {
     clearInterval(state.exportPolling);
     state.exportPolling = null;
     el('queue-footer').classList.remove('exporting');
+    el('cancel-export-btn').style.display = 'none';
     el('progress-eta').textContent = '';
     el('progress-text').className = 'done';
     const outName = data.output || state.lastExportName;
@@ -1773,6 +2181,7 @@ async function pollExport() {
     clearInterval(state.exportPolling);
     state.exportPolling = null;
     el('queue-footer').classList.remove('exporting');
+    el('cancel-export-btn').style.display = 'none';
     el('progress-eta').textContent = '';
     el('progress-text').className = 'error';
     el('progress-text').textContent = data.progress || 'Error';
@@ -1825,10 +2234,10 @@ async function clearAll() {
 }
 
 // ── Queue horizontal scroll via mouse wheel ───────────────────────────────────
-el('queue-scroll').addEventListener('wheel', (e) => {
+el('queue-viewport').addEventListener('wheel', (e) => {
   if (e.deltaY === 0) return;
   e.preventDefault();
-  el('queue-scroll').scrollLeft += e.deltaY;
+  el('queue-viewport').scrollLeft += e.deltaY;
 }, { passive: false });
 
 // ── Frame preview ─────────────────────────────────────────────────────────────
@@ -1877,12 +2286,19 @@ function updateFramePreviews() {
   leftPanel.style.visibility  = 'hidden';
   rightPanel.style.visibility = 'hidden';
 
+  // Adapt frame preview panel aspect ratio to clip orientation
+  const clipW = clip.width || 1080;
+  const clipH = clip.height || 1920;
+  const fpAR  = clipW > clipH ? '16 / 9' : '9 / 16';
+  leftPanel.style.aspectRatio  = fpAR;
+  rightPanel.style.aspectRatio = fpAR;
+
   const mark = state.markSlots[state.activeSlot];
   const dur  = clip.duration || 0;
   const t    = mark ?? 0;
   const tEnd = mark != null
     ? Math.min(mark + 3, dur > 0 ? dur - 0.033 : mark + 3)  // mark set: show fragment end
-    : (dur > 0 ? dur - 0.033 : 0);                           // no mark: show last frame of clip
+    : Math.min(3, dur > 0 ? dur - 0.033 : 3);               // no mark: show end of default 3s window
   const enc = encodeURIComponent(clip.filename);
   const fmt = s => s.toFixed(1) + 's';
 
@@ -1914,6 +2330,16 @@ function bindAutoplay() {
   cb.checked = localStorage.getItem('clipcutter_autoplay') === '1';
   cb.addEventListener('change', () => {
     localStorage.setItem('clipcutter_autoplay', cb.checked ? '1' : '0');
+  });
+}
+
+// ── Show skipped toggle ────────────────────────────────────────────────────────
+function bindShowSkipped() {
+  const cb = el('show-skipped-cb');
+  cb.checked = localStorage.getItem('clipcutter_show_skipped') !== '0';  // default: on
+  cb.addEventListener('change', () => {
+    localStorage.setItem('clipcutter_show_skipped', cb.checked ? '1' : '0');
+    renderQueue();
   });
 }
 
@@ -1963,33 +2389,137 @@ async function toggleDayCard(date, currentlyDisabled) {
   }
 }
 
-// ── Title / subtitle auto-save ────────────────────────────────────────────────
-function bindTitleFields() {
-  let timer = null;
-  function save() {
-    clearTimeout(timer);
-    timer = setTimeout(() => {
-      const title    = el('film-title').value.trim();
-      const subtitle = el('film-subtitle').value.trim();
-      state.projectTitle    = title;
-      state.projectSubtitle = subtitle;
-      api('POST', '/api/settings', { title, subtitle });
-      // Rebuild queue so intro tile thumbnail updates
-      renderQueue();
-    }, 600);
-  }
-  el('film-title').addEventListener('input', save);
-  el('film-subtitle').addEventListener('input', save);
+// ── Card title editor (day / title / end card) ───────────────────────────────
+let _editingCard = null;  // 'day:YYYY-MM-DD' | 'intro' | 'end'
+
+function openCardEditorFromPreview() {
+  const card = state.currentCard;
+  if (!card) return;
+  if (card.type === 'day')   openCardEditor('day', card.date);
+  else if (card.type === 'intro') openCardEditor('intro');
+  else if (card.type === 'end')   openCardEditor('end');
 }
+
+function openCardEditor(mode, dateStr) {
+  const label    = el('day-title-modal-label');
+  const dateEl   = el('day-title-modal-date');
+  const titleIn  = el('day-title-input');
+  const subIn    = el('day-subtitle-input');
+
+  if (mode === 'day') {
+    _editingCard = 'day:' + dateStr;
+    const existing = state.dayCardTitles[dateStr] || {};
+    label.innerHTML = 'Day card: <strong id="day-title-modal-date">' + dateStr + '</strong>';
+    titleIn.placeholder = 'Title (blank = show date)';
+    subIn.placeholder   = 'Subtitle (blank = show day name)';
+    titleIn.value = existing.title    || '';
+    subIn.value   = existing.subtitle || '';
+  } else if (mode === 'intro') {
+    _editingCard = 'intro';
+    label.innerHTML = 'Title card';
+    titleIn.placeholder = 'Title';
+    subIn.placeholder   = 'Subtitle';
+    titleIn.value = state.projectTitle    || '';
+    subIn.value   = state.projectSubtitle || '';
+  } else if (mode === 'end') {
+    _editingCard = 'end';
+    label.innerHTML = 'End card';
+    titleIn.placeholder = 'Title (blank = "The End")';
+    subIn.placeholder   = 'Subtitle';
+    titleIn.value = state.endCardTitle    || '';
+    subIn.value   = state.endCardSubtitle || '';
+  }
+  el('day-title-modal').classList.remove('hidden');
+  titleIn.focus();
+}
+
+// Keep old name as alias for backward compat (used by ondblclick inline handlers)
+function openDayTitleEditor(dateStr) { openCardEditor('day', dateStr); }
+
+function closeCardModal() {
+  _editingCard = null;
+  el('day-title-modal').classList.add('hidden');
+}
+
+function saveCardTitleFromModal() {
+  const editing  = _editingCard;
+  const title    = el('day-title-input').value.trim();
+  const subtitle = el('day-subtitle-input').value.trim();
+  closeCardModal();
+
+  if (!editing) return;
+
+  if (editing.startsWith('day:')) {
+    const dateStr = editing.slice(4);
+    if (title || subtitle) state.dayCardTitles[dateStr] = { title, subtitle };
+    else delete state.dayCardTitles[dateStr];
+    api('POST', '/api/day_card_title', { date: dateStr, title, subtitle })
+      .catch(e => console.error('day_card_title save error:', e));
+
+  } else if (editing === 'intro') {
+    state.projectTitle    = title;
+    state.projectSubtitle = subtitle;
+    api('POST', '/api/settings', { title, subtitle })
+      .catch(e => console.error('settings save error:', e));
+
+  } else if (editing === 'end') {
+    state.endCardTitle    = title;
+    state.endCardSubtitle = subtitle;
+    api('POST', '/api/end_card_title', { title, subtitle })
+      .catch(e => console.error('end_card_title save error:', e));
+  }
+
+  renderQueue();
+  if (state.currentCard) updateCardPreview();
+  if (editing === 'intro') updateNav();
+}
+
+function resetCardTitle() {
+  if (_editingCard === 'intro') {
+    const folderName = (state.folder || '').replace(/\\/g, '/').split('/').filter(Boolean).pop() || '';
+    el('day-title-input').value = folderName;
+    let firstDate = '';
+    if (state.clips.length > 0) {
+      const mod = state.clips.reduce((min, c) => (c.modified < min ? c.modified : min), state.clips[0].modified);
+      const d = new Date(mod);
+      if (!isNaN(d)) firstDate = `${String(d.getDate()).padStart(2,'0')}-${String(d.getMonth()+1).padStart(2,'0')}-${d.getFullYear()}`;
+    }
+    el('day-subtitle-input').value = firstDate;
+  } else if (_editingCard === 'end') {
+    el('day-title-input').value    = '';
+    el('day-subtitle-input').value = '';
+  } else {
+    // day card: reset to defaults (blank = auto date/day name)
+    el('day-title-input').value    = '';
+    el('day-subtitle-input').value = '';
+  }
+}
+
+// click outside modal box to close
+el('day-title-modal').addEventListener('click', e => {
+  if (e.target === el('day-title-modal')) closeCardModal();
+});
 
 // ── Keyboard shortcuts ────────────────────────────────────────────────────────
 document.addEventListener('keydown', e => {
+  // Modal open: Enter saves, Escape closes
+  if (!el('day-title-modal').classList.contains('hidden')) {
+    if (e.key === 'Enter')  { e.preventDefault(); saveCardTitleFromModal(); }
+    if (e.key === 'Escape') { e.preventDefault(); closeCardModal(); }
+    return;
+  }
   // Don't interfere with text inputs
   if (['INPUT', 'TEXTAREA'].includes(e.target.tagName)) {
     if (e.key === 'Enter' && e.target.id === 'folder-input') loadFolder();
     return;
   }
   if (el('app').style.display === 'none') return;
+
+  // In card preview mode: Escape goes back to current clip; all other keys blocked
+  if (state.currentCard) {
+    if (e.key === 'Escape') { e.preventDefault(); goToClip(state.current); }
+    return;
+  }
 
   switch (e.key) {
     case ' ':        e.preventDefault(); togglePlay();                    break;

@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C \"c:/Users/karol/git/clip-cutter\" diff HEAD -- server.py)"
+    ]
+  }
+}

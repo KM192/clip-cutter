@@ -47,11 +47,16 @@ state = {
     'title': '',
     'subtitle': '',
     'music': [],               # [{filename, duration}]
-    'disabled_day_cards': set(),  # set of date strings 'YYYY-MM-DD'
+    'disabled_day_cards': set(),   # set of date strings 'YYYY-MM-DD'
+    'day_card_titles': {},         # date_str -> {'title': str, 'subtitle': str}
+    'end_card_title': '',          # custom end-card title ('' = use 'The End')
+    'end_card_subtitle': '',       # custom end-card subtitle
 }
 
-export_lock = threading.Lock()
+export_lock   = threading.Lock()
 export_status = {'status': 'idle', 'progress': '', 'percent': 0, 'output': ''}
+export_cancel = False          # set to True to request cancellation
+export_proc   = None           # current long-running subprocess.Popen (merge step)
 
 # Single-client session guard: only the most recently connected tab is active
 _session = {'id': None}
@@ -100,10 +105,25 @@ def ensure_h264_preview(folder, filename):
             return None
 
         source = os.path.join(folder, filename)
-        print(f'  Transcoding HEVC→H264: {filename}...', flush=True)
+        _, _, _, _, color_transfer = ffprobe_info(source)
+        if is_hdr_transfer(color_transfer):
+            if FFMPEG_HAS_ZSCALE:
+                vf_args = ['-vf', ('zscale=t=linear:npl=1000,format=gbrpf32le,'
+                                   'zscale=p=bt709,tonemap=tonemap=mobius:desat=0,'
+                                   'zscale=t=bt709:m=bt709:r=tv,format=yuv420p')]
+            else:
+                vf_args = ['-vf', 'colorspace=space=bt709:trc=bt709:primaries=bt709:range=mpeg']
+            color_args = ['-color_primaries', 'bt709', '-color_trc', 'bt709',
+                          '-colorspace', 'bt709', '-color_range', '1']
+        else:
+            vf_args    = ['-vf', 'format=yuv420p']
+            color_args = []
+        print(f'  Transcoding HEVC→H264{"  HDR" if is_hdr_transfer(color_transfer) else ""}: {filename}...', flush=True)
         cmd = [
             FFMPEG, '-y', '-i', source,
+            *vf_args,
             *_video_enc_args(23),
+            *color_args,
             '-c:a', 'aac', '-b:a', '128k',
             preview_path,
         ]
@@ -133,7 +153,8 @@ def run_cmd(cmd, timeout=60, cwd=None):
 
 
 def ffprobe_info(path):
-    """Returns (duration, video_codec_name, width, height). video_codec_name may be None."""
+    """Returns (duration, video_codec_name, width, height, color_transfer).
+    color_transfer may be None; HDR clips have e.g. 'smpte2084' or 'arib-std-b67'."""
     try:
         rc, out, _ = run_cmd(
             [FFPROBE, '-v', 'quiet', '-print_format', 'json',
@@ -146,11 +167,13 @@ def ffprobe_info(path):
             duration = 0.0
             width = 0
             height = 0
+            color_transfer = None
             for s in d.get('streams', []):
                 if s.get('codec_type') == 'video':
                     codec = s.get('codec_name', '').lower() or None
                     width  = s.get('width',  0)
                     height = s.get('height', 0)
+                    color_transfer = s.get('color_transfer') or None
                     # Swap for 90°/270° rotation (phone portrait videos stored as landscape).
                     # Newer ffprobe: rotation in side_data_list; older: tags.rotate.
                     rotate = 0
@@ -174,10 +197,17 @@ def ffprobe_info(path):
                 fmt_dur = d.get('format', {}).get('duration')
                 if fmt_dur:
                     duration = float(fmt_dur)
-            return duration, codec, width, height
+            return duration, codec, width, height, color_transfer
     except Exception as e:
         print(f'  ffprobe error for {os.path.basename(path)}: {e}')
-    return 0.0, None, 0, 0
+    return 0.0, None, 0, 0, None
+
+
+# HDR color transfer functions that require tone-mapping to SDR
+_HDR_TRANSFERS = {'smpte2084', 'arib-std-b67', 'bt2020-10', 'bt2020-12'}
+
+def is_hdr_transfer(color_transfer):
+    return bool(color_transfer and color_transfer.lower() in _HDR_TRANSFERS)
 
 
 def scan_folder(folder):
@@ -199,8 +229,9 @@ def scan_folder(folder):
     for i, (mtime, _, name) in enumerate(entries):
         path = os.path.join(folder, name)
         print(f'  [{i+1}/{n}] {name} ...', end='', flush=True)
-        dur, codec, w, h = ffprobe_info(path)
-        tag = f' [{codec}]' if codec else ''
+        dur, codec, w, h, color_transfer = ffprobe_info(path)
+        hdr = is_hdr_transfer(color_transfer)
+        tag = f' [{codec}{"  HDR" if hdr else ""}]' if codec else ''
         print(f' {dur:.1f}s{tag}')
         clips.append({
             'id': i,
@@ -210,6 +241,7 @@ def scan_folder(folder):
             'modified': datetime.datetime.fromtimestamp(mtime).isoformat(),
             'width':  w,
             'height': h,
+            'is_hdr': hdr,
         })
     return clips
 
@@ -227,7 +259,7 @@ def scan_music(folder):
         return []
     for name in names:
         path = os.path.join(music_dir, name)
-        dur, _, _, _ = ffprobe_info(path)
+        dur, _, _, _, _ = ffprobe_info(path)
         tracks.append({'filename': name, 'duration': round(dur, 3)})
         print(f'  Music: {name} ({dur:.1f}s)')
     return tracks
@@ -253,36 +285,78 @@ def _title_card_cache_path(folder, title, subtitle):
     return os.path.join(folder, '.clip_cache', f'title_{h}.mp4')
 
 
-def _end_card_cache_path(folder):
-    """Return cache path for the end card (content never changes)."""
+def _end_card_cache_path(folder, title='', subtitle=''):
+    """Return cache path for the end card, keyed by custom title/subtitle if provided."""
+    if title or subtitle:
+        h = hashlib.md5(f'{title}|{subtitle}'.encode()).hexdigest()[:12]
+        return os.path.join(folder, '.clip_cache', f'end_card_{h}.mp4')
     return os.path.join(folder, '.clip_cache', 'end_card.mp4')
 
 
-def _day_card_cache_path(folder, date_str):
-    """Return cache path for a day separator card keyed by YYYY-MM-DD date."""
+def _delete_end_card_cache(folder):
+    """Delete all cached end-card files."""
+    cache_dir = os.path.join(folder, '.clip_cache')
+    if not os.path.isdir(cache_dir):
+        return
+    for name in os.listdir(cache_dir):
+        if name.startswith('end_card') and name.endswith('.mp4'):
+            try:
+                os.remove(os.path.join(cache_dir, name))
+            except OSError:
+                pass
+
+
+def _day_card_cache_path(folder, date_str, custom_title='', custom_subtitle=''):
+    """Return cache path for a day separator card.  Includes a hash of any
+    custom title/subtitle so changing the text automatically invalidates cache."""
+    if custom_title or custom_subtitle:
+        h = hashlib.md5(f'{custom_title}|{custom_subtitle}'.encode()).hexdigest()[:8]
+        return os.path.join(folder, '.clip_cache', f'day_{date_str}_{h}.mp4')
     return os.path.join(folder, '.clip_cache', f'day_{date_str}.mp4')
+
+
+def _delete_day_card_cache(folder, date_str):
+    """Delete all cached day-card files for the given date (default + all hash variants)."""
+    cache_dir = os.path.join(folder, '.clip_cache')
+    if not os.path.isdir(cache_dir):
+        return
+    prefix = f'day_{date_str}'
+    for name in os.listdir(cache_dir):
+        if name.startswith(prefix) and name.endswith('.mp4'):
+            try:
+                os.remove(os.path.join(cache_dir, name))
+            except OSError:
+                pass
 
 
 DAYS_PL = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 
 
 def load_selections(folder):
-    """Returns (selections_dict, title, subtitle, disabled_day_cards)."""
+    """Returns (selections_dict, title, subtitle, disabled_day_cards, day_card_titles,
+    end_card_title, end_card_subtitle, music_ends, has_saved).
+    music_ends: dict filename->track_end_seconds (trimmed duration per track).
+    has_saved=True means a selections.json was found for this folder."""
     path = os.path.join(folder, 'selections.json')
     if os.path.isfile(path):
         try:
             with open(path, encoding='utf-8') as f:
                 data = json.load(f)
             if data.get('source_folder') == folder:
-                sel = {s['filename']: s for s in data.get('selections', [])}
-                disabled = set(data.get('disabled_day_cards', []))
-                return sel, data.get('title', ''), data.get('subtitle', ''), disabled
+                sel        = {s['filename']: s for s in data.get('selections', [])}
+                disabled   = set(data.get('disabled_day_cards', []))
+                day_titles = data.get('day_card_titles', {})
+                end_title  = data.get('end_card_title', '')
+                end_sub    = data.get('end_card_subtitle', '')
+                music_ends = data.get('music_ends', {})
+                return (sel, data.get('title', ''), data.get('subtitle', ''),
+                        disabled, day_titles, end_title, end_sub, music_ends, True)
         except Exception as e:
             print(f'Load selections error: {e}')
-    return {}, '', '', set()
+    return {}, '', '', set(), {}, '', '', {}, False
 
 
-def save_selections(folder, selections, title='', subtitle='', disabled_day_cards=None):
+def save_selections(folder, selections, title='', subtitle='', disabled_day_cards=None, day_card_titles=None, end_card_title='', end_card_subtitle='', music_ends=None):
     path = os.path.join(folder, 'selections.json')
     data = {
         'source_folder': folder,
@@ -292,6 +366,10 @@ def save_selections(folder, selections, title='', subtitle='', disabled_day_card
         'subtitle': subtitle,
         'selections': list(selections.values()),
         'disabled_day_cards': sorted(disabled_day_cards or []),
+        'day_card_titles': day_card_titles or {},
+        'end_card_title': end_card_title,
+        'end_card_subtitle': end_card_subtitle,
+        'music_ends': music_ends or {},
     }
     try:
         with open(path, 'w', encoding='utf-8') as f:
@@ -447,8 +525,9 @@ def generate_title_card(title, subtitle, out_path):
     return out_path
 
 
-def generate_end_card(out_path):
-    """Generate 5-second 'The End' card MP4 (1080x1920).
+def generate_end_card(out_path, title='', subtitle=''):
+    """Generate 5-second end card MP4 (1080x1920).
+    title defaults to 'The End' if not provided; subtitle is optional.
     Returns out_path on success, or None on failure."""
     font = find_text_font()
     if not font:
@@ -456,14 +535,27 @@ def generate_end_card(out_path):
         return None
     font_dir  = os.path.dirname(font)
     font_name = os.path.basename(font)
-    vf = (f"drawtext=fontfile={font_name}:text=The End:fontsize=120:"
-          f"fontcolor=white:x=(w-tw)/2:y=(h-th)/2")
+    main_text = title or 'The End'
+    main_esc  = esc_drawtext(main_text)
+    if subtitle:
+        sub_esc   = esc_drawtext(subtitle)
+        vf_parts = [
+            f"drawtext=fontfile={font_name}:text={main_esc}:fontsize=120:"
+            f"fontcolor=white:x=(w-tw)/2:y=(h-th)/2-50",
+            f"drawtext=fontfile={font_name}:text={sub_esc}:fontsize=60:"
+            f"fontcolor=#aaaaaa:x=(w-tw)/2:y=(h-th)/2+70",
+        ]
+    else:
+        vf_parts = [
+            f"drawtext=fontfile={font_name}:text={main_esc}:fontsize=120:"
+            f"fontcolor=white:x=(w-tw)/2:y=(h-th)/2",
+        ]
     cmd = [
         FFMPEG, '-y',
         '-f', 'lavfi', '-i', 'color=c=black:s=1080x1920:r=30',
         '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo',
         '-t', '5',
-        '-vf', vf,
+        '-vf', ','.join(vf_parts),
         '-map', '0:v', '-map', '1:a',
         *_video_enc_args(18),
         '-c:a', 'aac', '-b:a', '128k', '-ar', '44100', '-ac', '2',
@@ -475,9 +567,10 @@ def generate_end_card(out_path):
         return None
     return out_path
 
-def generate_day_card(date_str, day_name, out_path):
+def generate_day_card(date_str, day_name, out_path, title_override='', subtitle_override=''):
     """Generate 2-second day separator card MP4 (1080x1920).
-    Shows DD-MM-YYYY centered, day name below. Dark navy background.
+    Main line: title_override if set, otherwise DD-MM-YYYY date.
+    Sub line:  subtitle_override if set, otherwise day_name.
     Returns out_path on success, or None on failure."""
     font = find_text_font()
     if not font:
@@ -486,22 +579,28 @@ def generate_day_card(date_str, day_name, out_path):
     font_dir  = os.path.dirname(font)
     font_name = os.path.basename(font)
 
-    # Convert YYYY-MM-DD → DD-MM-YYYY for display
-    try:
-        parts = date_str.split('-')
-        display_date = f'{parts[2]}-{parts[1]}-{parts[0]}'
-    except Exception:
-        display_date = date_str
+    # Main text: custom title overrides the date
+    if title_override:
+        main_text = title_override
+    else:
+        try:
+            parts = date_str.split('-')
+            main_text = f'{parts[2]}-{parts[1]}-{parts[0]}'
+        except Exception:
+            main_text = date_str
 
-    date_esc = esc_drawtext(display_date)
+    # Sub text: custom subtitle overrides the day name
+    sub_text = subtitle_override if subtitle_override else day_name
+
+    main_esc = esc_drawtext(main_text)
     vf_parts = [
-        f"drawtext=fontfile={font_name}:text={date_esc}:fontsize=96:"
+        f"drawtext=fontfile={font_name}:text={main_esc}:fontsize=96:"
         f"fontcolor=white:x=(w-tw)/2:y=(h-th)/2-50",
     ]
-    if day_name:
-        day_esc = esc_drawtext(day_name)
+    if sub_text:
+        sub_esc = esc_drawtext(sub_text)
         vf_parts.append(
-            f"drawtext=fontfile={font_name}:text={day_esc}:fontsize=60:"
+            f"drawtext=fontfile={font_name}:text={sub_esc}:fontsize=60:"
             f"fontcolor=#aaaaaa:x=(w-tw)/2:y=(h-th)/2+70"
         )
 
@@ -532,7 +631,7 @@ def _add_music_to_video(folder, video_path, out_path, music_tracks):
         return None
 
     music_dir = os.path.join(folder, 'music')
-    video_dur, _, _, _ = ffprobe_info(video_path)
+    video_dur, _, _, _, _ = ffprobe_info(video_path)
     if not video_dur:
         print('WARN: Cannot read video duration – skipping music')
         return None
@@ -547,13 +646,26 @@ def _add_music_to_video(folder, video_path, out_path, music_tracks):
     for p in music_paths:
         inputs += ['-i', p]
 
-    # Build filter_complex: concat N audio streams → trim → fade-out → amix with video
+    # Build filter_complex: trim each track to track_end if set, concat, then mix with video
+    parts = []
     if n == 1:
-        prefix = f'[1:a]'
-        parts  = []
+        te = music_tracks[0].get('track_end')
+        if te is not None and te < music_tracks[0]['duration']:
+            parts.append(f'[1:a]atrim=0:{te:.3f},asetpts=PTS-STARTPTS[mus_t0]')
+            prefix = '[mus_t0]'
+        else:
+            prefix = '[1:a]'
     else:
-        concat_ins = ''.join(f'[{i+1}:a]' for i in range(n))
-        parts  = [f'{concat_ins}concat=n={n}:v=0:a=1[mus_raw]']
+        trimmed = []
+        for i, t in enumerate(music_tracks):
+            te = t.get('track_end')
+            if te is not None and te < t['duration']:
+                parts.append(f'[{i+1}:a]atrim=0:{te:.3f},asetpts=PTS-STARTPTS[mus_t{i}]')
+                trimmed.append(f'[mus_t{i}]')
+            else:
+                trimmed.append(f'[{i+1}:a]')
+        concat_ins = ''.join(trimmed)
+        parts.append(f'{concat_ins}concat=n={n}:v=0:a=1[mus_raw]')
         prefix = '[mus_raw]'
 
     trim_filter = (f'{prefix}atrim=0:{video_dur:.3f},asetpts=PTS-STARTPTS,'
@@ -595,10 +707,11 @@ def _embed_mp4_thumbnail(video_path, thumb_path):
         '-disposition:v:1', 'attached_pic',
         temp,
     ]
-    rc, _, err = run_cmd(cmd, timeout=120)
+    rc, _, err = run_cmd(cmd, timeout=600)
     if rc == 0:
         try:
             os.replace(temp, video_path)
+            return True
         except Exception as e:
             print(f'WARN: Could not replace file after thumbnail embed: {e}')
             try:
@@ -611,18 +724,23 @@ def _embed_mp4_thumbnail(video_path, thumb_path):
             os.remove(temp)
         except Exception:
             pass
+    return False
 
 
 # ─── Export ───────────────────────────────────────────────────────────────────
 
-def export_worker(folder, clips, selections, out_name, title='', subtitle='', music_tracks=None, include_day_cards=True, disabled_day_cards=None):
-    global export_status
+def export_worker(folder, clips, selections, out_name, title='', subtitle='', music_tracks=None, include_day_cards=True, disabled_day_cards=None, day_card_titles=None, end_card_title='', end_card_subtitle=''):
+    global export_status, export_cancel, export_proc
 
     def set_status(s, msg, pct, output=None):
         with export_lock:
             export_status.update({'status': s, 'progress': msg, 'percent': pct})
             if output is not None:
                 export_status['output'] = output
+
+    def cancelled():
+        with export_lock:
+            return export_cancel
 
     set_status('working', 'Preparing...', 0)
 
@@ -689,14 +807,19 @@ def export_worker(folder, clips, selections, out_name, title='', subtitle='', mu
             set_status('working', f'Cutting {slot_idx+1}/{total_slots}: {label}', int(slot_idx / total_slots * 70))
             slot_idx += 1
 
-            if FFMPEG_HAS_ZSCALE:
-                # Full HDR→SDR tone-mapping pipeline (requires libzimg)
-                color_vf = ('zscale=t=linear:npl=100,format=gbrpf32le,'
-                            'zscale=p=bt709,tonemap=tonemap=hable:desat=0,'
-                            'zscale=t=bt709:m=bt709:r=tv,format=yuv420p')
+            clip_is_hdr = clip.get('is_hdr') or is_hdr_transfer(ffprobe_info(inp)[4])
+            if clip_is_hdr:
+                if FFMPEG_HAS_ZSCALE:
+                    # HDR→SDR tone-mapping via zscale; npl=1000 matches modern phone HDR peak
+                    color_vf = ('zscale=t=linear:npl=1000,format=gbrpf32le,'
+                                'zscale=p=bt709,tonemap=tonemap=mobius:desat=0,'
+                                'zscale=t=bt709:m=bt709:r=tv,format=yuv420p')
+                else:
+                    # Fallback: colorspace matrix conversion (no tone-mapping)
+                    color_vf = 'colorspace=space=bt709:trc=bt709:primaries=bt709:range=mpeg'
             else:
-                # Fallback: colorspace matrix conversion (no tone-mapping)
-                color_vf = 'colorspace=space=bt709:trc=bt709:primaries=bt709:range=mpeg'
+                # SDR clip — just ensure correct pixel format, no tone-mapping
+                color_vf = 'format=yuv420p'
             vf = (f'{color_vf},'
                   'scale=1080:1920:force_original_aspect_ratio=decrease,'
                   'pad=1080:1920:-1:-1:color=black')
@@ -713,7 +836,13 @@ def export_worker(folder, clips, selections, out_name, title='', subtitle='', mu
                 '-r', '30',
                 cache_path,
             ]
+            if cancelled():
+                set_status('error', 'Cancelled', 0)
+                return
             rc, _, err = run_cmd(cmd, timeout=120)
+            if cancelled():
+                set_status('error', 'Cancelled', 0)
+                return
             if rc != 0:
                 msg = err.decode('utf-8', errors='replace')[-400:]
                 set_status('error', f'Cutting error {label}: {msg}', 0)
@@ -721,16 +850,17 @@ def export_worker(folder, clips, selections, out_name, title='', subtitle='', mu
             cut_clips.append((clip_day, cache_path))
 
     # End card — check cache first
-    end_cache = _end_card_cache_path(folder)
+    end_cache = _end_card_cache_path(folder, end_card_title, end_card_subtitle)
     if os.path.isfile(end_cache):
         print('  [cache] end card')
         end_file = end_cache
     else:
         set_status('working', 'Generating end card...', 72)
-        end_file = generate_end_card(end_cache)
+        end_file = generate_end_card(end_cache, end_card_title, end_card_subtitle)
 
     # Day separator cards — one per unique day in chronological order
-    _disabled = disabled_day_cards or set()
+    _disabled    = disabled_day_cards or set()
+    _day_titles  = day_card_titles or {}
     day_files = {}  # date_str -> path or None
     if include_day_cards:
         for (day, _) in cut_clips:
@@ -738,7 +868,10 @@ def export_worker(folder, clips, selections, out_name, title='', subtitle='', mu
                 if day in _disabled:
                     day_files[day] = None  # explicitly disabled by user
                     continue
-                day_cache = _day_card_cache_path(folder, day)
+                custom     = _day_titles.get(day, {})
+                cust_title = custom.get('title', '')
+                cust_sub   = custom.get('subtitle', '')
+                day_cache  = _day_card_cache_path(folder, day, cust_title, cust_sub)
                 if os.path.isfile(day_cache):
                     print(f'  [cache] day card {day}')
                     day_files[day] = day_cache
@@ -749,7 +882,9 @@ def export_worker(folder, clips, selections, out_name, title='', subtitle='', mu
                         day_name = DAYS_PL[dt_obj.weekday()]
                     except Exception:
                         day_name = ''
-                    day_files[day] = generate_day_card(day, day_name, day_cache)
+                    day_files[day] = generate_day_card(day, day_name, day_cache,
+                                                        title_override=cust_title,
+                                                        subtitle_override=cust_sub)
 
     # Assemble final file list: [title_card?] + [day_card + clips_of_day...]* + [end_card?]
     # First day card is skipped when a title card precedes it (clips flow directly after title).
@@ -801,6 +936,8 @@ def export_worker(folder, clips, selections, out_name, title='', subtitle='', mu
         merge_kw['creationflags'] = _NO_WINDOW
 
     proc = subprocess.Popen(merge_cmd, **merge_kw)
+    with export_lock:
+        export_proc = proc
 
     # Drain stderr in background to prevent pipe deadlock
     stderr_buf = []
@@ -815,6 +952,11 @@ def export_worker(folder, clips, selections, out_name, title='', subtitle='', mu
 
     try:
         for raw in proc.stdout:
+            if cancelled():
+                proc.kill()
+                proc.wait()
+                set_status('error', 'Cancelled', 0)
+                return
             line = raw.decode('utf-8', errors='replace').strip()
             if line.startswith('out_time_ms='):
                 try:
@@ -835,6 +977,8 @@ def export_worker(folder, clips, selections, out_name, title='', subtitle='', mu
     finally:
         proc.stdout.close()
         t_err.join(timeout=5)
+        with export_lock:
+            export_proc = None
 
     rc = proc.wait(timeout=3600)
     err = b''.join(stderr_buf)
@@ -862,9 +1006,24 @@ def export_worker(folder, clips, selections, out_name, title='', subtitle='', mu
     # Embed title card thumbnail as cover art so Windows Explorer shows it
     if title_file:
         thumb_path = title_file.replace('.mp4', '_thumb.jpg')
+        if not os.path.isfile(thumb_path):
+            # Title card was served from cache but _thumb.jpg is missing — generate it now
+            run_cmd([FFMPEG, '-y', '-ss', '0', '-i', title_file,
+                     '-vframes', '1', '-q:v', '3', thumb_path], timeout=15)
         if os.path.isfile(thumb_path):
             set_status('working', 'Embedding thumbnail...', 94)
-            _embed_mp4_thumbnail(out_path, thumb_path)
+            ok = _embed_mp4_thumbnail(out_path, thumb_path)
+            if ok and IS_WIN:
+                # Tell Windows Explorer to discard its cached thumbnail and re-read the file
+                try:
+                    import ctypes
+                    abs_out = os.path.abspath(out_path)
+                    ctypes.windll.shell32.SHChangeNotify(
+                        0x00002000,          # SHCNE_UPDATEITEM
+                        0x0005,              # SHCNF_PATHW
+                        ctypes.c_wchar_p(abs_out), None)
+                except Exception:
+                    pass
 
     # Cleanup — only temp dir (clips live in .clip_cache/, not in temp)
     set_status('working', 'Cleanup...', 96)
@@ -956,6 +1115,8 @@ class Handler(BaseHTTPRequestHandler):
                     'count': len(state['clips']),
                     'title': state['title'],
                     'subtitle': state['subtitle'],
+                    'end_card_title': state['end_card_title'],
+                    'end_card_subtitle': state['end_card_subtitle'],
                 })
         elif path == '/api/clips':
             with state_lock:
@@ -965,6 +1126,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({
                     'selections': state['selections'],
                     'disabled_day_cards': list(state['disabled_day_cards']),
+                    'day_card_titles': dict(state['day_card_titles']),
+                    'end_card_title': state['end_card_title'],
+                    'end_card_subtitle': state['end_card_subtitle'],
                 })
         elif path == '/api/preview_status':
             with state_lock:
@@ -1061,8 +1225,21 @@ class Handler(BaseHTTPRequestHandler):
             if not clips:
                 self.send_json({'error': 'No MP4 files found in folder'}, 400)
                 return
-            sel, title, subtitle, disabled_days = load_selections(folder)
+            sel, title, subtitle, disabled_days, day_titles, end_title, end_sub, music_ends, has_saved = load_selections(folder)
+            if not has_saved:
+                # First load – apply defaults: title = folder basename, subtitle = date of first clip
+                title = os.path.basename(folder.rstrip('/\\'))
+                try:
+                    first = min(clips, key=lambda c: c.get('modified', ''))
+                    dt    = datetime.datetime.fromisoformat(first['modified'])
+                    subtitle = dt.strftime('%d-%m-%Y')
+                except Exception:
+                    pass
             music = scan_music(folder)
+            # Apply saved track_end values to music tracks
+            for t in music:
+                if t['filename'] in music_ends:
+                    t['track_end'] = float(music_ends[t['filename']])
             with state_lock:
                 state['folder']             = folder
                 state['clips']              = clips
@@ -1071,6 +1248,11 @@ class Handler(BaseHTTPRequestHandler):
                 state['subtitle']           = subtitle
                 state['music']              = music
                 state['disabled_day_cards'] = disabled_days
+                state['day_card_titles']    = day_titles
+                state['end_card_title']     = end_title
+                state['end_card_subtitle']  = end_sub
+            if not has_saved and folder:
+                save_selections(folder, sel, title, subtitle, disabled_days, day_titles, end_title, end_sub)
             print(f'Loaded {len(clips)} clips, {len(sel)} saved decisions, {len(music)} tracks')
             threading.Thread(target=pregenerate_hevc_previews, args=(folder, clips), daemon=True).start()
             self.send_json({'ok': True, 'count': len(clips)})
@@ -1081,18 +1263,22 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({'error': 'Missing filename'}, 400)
                 return
             with state_lock:
-                folder   = state['folder']
-                title    = state['title']
-                subtitle = state['subtitle']
+                folder    = state['folder']
+                title     = state['title']
+                subtitle  = state['subtitle']
+                end_title = state['end_card_title']
+                end_sub   = state['end_card_subtitle']
                 state['selections'][fname] = {
                     'filename': fname,
                     'start_time': data.get('start_time'),
                     'enabled': bool(data.get('enabled', True)),
                     'extra_starts': [float(t) for t in (data.get('extra_starts') or [])],
                 }
-                sel_copy = dict(state['selections'])
+                sel_copy   = dict(state['selections'])
+                disabled   = list(state['disabled_day_cards'])
+                day_titles = dict(state['day_card_titles'])
             if folder:
-                save_selections(folder, sel_copy, title, subtitle)
+                save_selections(folder, sel_copy, title, subtitle, disabled, day_titles, end_title, end_sub)
             self.send_json({'ok': True})
 
         elif path == '/api/settings':
@@ -1101,10 +1287,14 @@ class Handler(BaseHTTPRequestHandler):
             with state_lock:
                 state['title']    = title
                 state['subtitle'] = subtitle
-                folder   = state['folder']
-                sel_copy = dict(state['selections'])
+                folder     = state['folder']
+                sel_copy   = dict(state['selections'])
+                disabled   = list(state['disabled_day_cards'])
+                day_titles = dict(state['day_card_titles'])
+                end_title  = state['end_card_title']
+                end_sub    = state['end_card_subtitle']
             if folder:
-                save_selections(folder, sel_copy, title, subtitle)
+                save_selections(folder, sel_copy, title, subtitle, disabled, day_titles, end_title, end_sub)
             self.send_json({'ok': True})
 
         elif path == '/api/export':
@@ -1112,16 +1302,21 @@ class Handler(BaseHTTPRequestHandler):
                 if not state['folder']:
                     self.send_json({'error': 'No folder loaded'}, 400)
                     return
-                folder        = state['folder']
-                clips         = list(state['clips'])
-                sel           = dict(state['selections'])
-                music         = list(state['music'])
-                disabled_days = set(state['disabled_day_cards'])
+                folder           = state['folder']
+                clips            = list(state['clips'])
+                sel              = dict(state['selections'])
+                music            = list(state['music'])
+                disabled_days    = set(state['disabled_day_cards'])
+                day_titles       = dict(state['day_card_titles'])
+                end_card_title   = state['end_card_title']
+                end_card_subtitle= state['end_card_subtitle']
 
+            global export_cancel, export_proc
             with export_lock:
                 if export_status['status'] == 'working':
                     self.send_json({'error': 'Export already in progress'}, 400)
                     return
+                export_cancel = False   # clear any previous cancel flag
 
             ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
             out_name = data.get('output_filename') or f'final_{ts}.mp4'
@@ -1135,11 +1330,25 @@ class Handler(BaseHTTPRequestHandler):
 
             t = threading.Thread(
                 target=export_worker,
-                args=(folder, clips, sel, out_name, title, subtitle, music, include_day_cards, disabled_days),
+                args=(folder, clips, sel, out_name, title, subtitle, music, include_day_cards, disabled_days, day_titles, end_card_title, end_card_subtitle),
                 daemon=True,
             )
             t.start()
             self.send_json({'ok': True, 'output': out_name})
+
+        elif path == '/api/export/cancel':
+            with export_lock:
+                if export_status['status'] != 'working':
+                    self.send_json({'ok': False, 'error': 'No export in progress'})
+                    return
+                export_cancel = True
+                proc = export_proc
+            if proc:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            self.send_json({'ok': True})
 
         elif path == '/api/shutdown':
             self.send_json({'ok': True})
@@ -1160,13 +1369,81 @@ class Handler(BaseHTTPRequestHandler):
                     state['disabled_day_cards'].discard(date_str)
                 else:
                     state['disabled_day_cards'].add(date_str)
-                folder   = state['folder']
-                sel_copy = dict(state['selections'])
-                title    = state['title']
-                subtitle = state['subtitle']
-                disabled = list(state['disabled_day_cards'])
+                folder    = state['folder']
+                sel_copy  = dict(state['selections'])
+                title     = state['title']
+                subtitle  = state['subtitle']
+                disabled  = list(state['disabled_day_cards'])
+                day_titles= dict(state['day_card_titles'])
+                end_title = state['end_card_title']
+                end_sub   = state['end_card_subtitle']
             if folder:
-                save_selections(folder, sel_copy, title, subtitle, disabled)
+                save_selections(folder, sel_copy, title, subtitle, disabled, day_titles, end_title, end_sub)
+            self.send_json({'ok': True})
+
+        elif path == '/api/day_card_title':
+            date_str      = data.get('date', '').strip()
+            title_text    = data.get('title', '').strip()
+            subtitle_text = data.get('subtitle', '').strip()
+            if not date_str:
+                self.send_json({'error': 'Missing date'}, 400)
+                return
+            with state_lock:
+                if title_text or subtitle_text:
+                    state['day_card_titles'][date_str] = {'title': title_text, 'subtitle': subtitle_text}
+                else:
+                    state['day_card_titles'].pop(date_str, None)
+                folder     = state['folder']
+                sel_copy   = dict(state['selections'])
+                title      = state['title']
+                subtitle   = state['subtitle']
+                disabled   = list(state['disabled_day_cards'])
+                day_titles = dict(state['day_card_titles'])
+                end_title  = state['end_card_title']
+                end_sub    = state['end_card_subtitle']
+            if folder:
+                _delete_day_card_cache(folder, date_str)
+                save_selections(folder, sel_copy, title, subtitle, disabled, day_titles, end_title, end_sub)
+            self.send_json({'ok': True})
+
+        elif path == '/api/end_card_title':
+            title_text    = data.get('title', '').strip()
+            subtitle_text = data.get('subtitle', '').strip()
+            with state_lock:
+                state['end_card_title']    = title_text
+                state['end_card_subtitle'] = subtitle_text
+                folder     = state['folder']
+                sel_copy   = dict(state['selections'])
+                title      = state['title']
+                subtitle   = state['subtitle']
+                disabled   = list(state['disabled_day_cards'])
+                day_titles = dict(state['day_card_titles'])
+            if folder:
+                _delete_end_card_cache(folder)
+                save_selections(folder, sel_copy, title, subtitle, disabled, day_titles, title_text, subtitle_text)
+            self.send_json({'ok': True})
+
+        elif path == '/api/music_ends':
+            # music_ends: {filename: track_end_seconds} — saves trimmed end per track
+            ends = data.get('music_ends', {})
+            with state_lock:
+                for track in state['music']:
+                    fname = track['filename']
+                    if fname in ends:
+                        track['track_end'] = float(ends[fname])
+                    elif 'track_end' in track:
+                        del track['track_end']  # reset to full duration
+                folder     = state['folder']
+                sel_copy   = dict(state['selections'])
+                title      = state['title']
+                subtitle   = state['subtitle']
+                disabled   = list(state['disabled_day_cards'])
+                day_titles = dict(state['day_card_titles'])
+                end_title  = state['end_card_title']
+                end_sub    = state['end_card_subtitle']
+                music_ends_save = {t['filename']: t['track_end'] for t in state['music'] if 'track_end' in t}
+            if folder:
+                save_selections(folder, sel_copy, title, subtitle, disabled, day_titles, end_title, end_sub, music_ends_save)
             self.send_json({'ok': True})
 
         elif path == '/api/clear-cache':
@@ -1209,12 +1486,14 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         # Prefer the pre-cut clip cache — it's a short H.264 file, seek is instant
+        used_cache = False
         if cache_start >= 0:
             cache_path = _clip_cache_path(folder, filename, cache_start)
             if os.path.isfile(cache_path):
                 fpath = cache_path
-                t = max(0.0, min(t - cache_start, 2.967))
-        else:
+                t = max(0.0, min(t - cache_start, 2.9))
+                used_cache = True
+        if not used_cache:
             # Fall back: use H.264 preview for HEVC clips
             codec = next((c.get('codec', '') for c in clips if c['filename'] == filename), '')
             if codec in ('hevc', 'h265'):
@@ -1223,12 +1502,18 @@ class Handler(BaseHTTPRequestHandler):
                 if preview and os.path.isfile(preview):
                     fpath = preview
 
+        # Choose scale to match clip orientation (portrait vs landscape)
+        clip_info = next((c for c in clips if c['filename'] == filename), None)
+        cw = (clip_info or {}).get('width',  1080)
+        ch = (clip_info or {}).get('height', 1920)
+        scale = 'scale=960:540' if cw > ch else 'scale=540:960'
+
         kwargs = {}
         if IS_WIN:
             kwargs['creationflags'] = _NO_WINDOW
         try:
             cmd = [FFMPEG, '-y', '-ss', f'{t:.3f}', '-i', fpath,
-                   '-vframes', '1', '-an', '-vf', 'scale=540:960',
+                   '-vframes', '1', '-an', '-vf', scale,
                    '-f', 'image2', '-vcodec', 'mjpeg', '-q:v', '4', 'pipe:1']
             r = subprocess.run(cmd, capture_output=True, timeout=10, **kwargs)
             if r.returncode == 0 and r.stdout:
@@ -1284,7 +1569,7 @@ class Handler(BaseHTTPRequestHandler):
         codec = next((c.get('codec', '') for c in clips if c['filename'] == filename), '')
         if not codec:
             # Codec not in clip list (e.g. fresh scan without codec field) – detect now
-            _, codec, _, _ = ffprobe_info(fpath)
+            _, codec, _, _, _ = ffprobe_info(fpath)
             codec = codec or ''
         if codec in ('hevc', 'h265'):
             preview = ensure_h264_preview(folder, filename)
@@ -1443,8 +1728,20 @@ def main():
         if not clips:
             print(f'ERROR: No MP4 files in: {folder}')
             sys.exit(1)
-        sel, title, subtitle, disabled_days = load_selections(folder)
+        sel, title, subtitle, disabled_days, day_titles, end_title, end_sub, music_ends, has_saved = load_selections(folder)
+        if not has_saved:
+            title = os.path.basename(folder.rstrip('/\\'))
+            try:
+                first = min(clips, key=lambda c: c.get('modified', ''))
+                dt    = datetime.datetime.fromisoformat(first['modified'])
+                subtitle = dt.strftime('%d-%m-%Y')
+            except Exception:
+                pass
         music = scan_music(folder)
+        # Apply saved track_end values to music tracks
+        for t in music:
+            if t['filename'] in music_ends:
+                t['track_end'] = float(music_ends[t['filename']])
         with state_lock:
             state['folder']             = folder
             state['clips']              = clips
@@ -1453,6 +1750,11 @@ def main():
             state['subtitle']           = subtitle
             state['music']              = music
             state['disabled_day_cards'] = disabled_days
+            state['day_card_titles']    = day_titles
+            state['end_card_title']     = end_title
+            state['end_card_subtitle']  = end_sub
+        if not has_saved and folder:
+            save_selections(folder, sel, title, subtitle, disabled_days, day_titles, end_title, end_sub)
         print(f'Loaded {len(clips)} clips, {len(music)} tracks')
         threading.Thread(target=pregenerate_hevc_previews, args=(folder, clips), daemon=True).start()
 
