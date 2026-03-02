@@ -394,6 +394,9 @@
     .q-item.preview-working { opacity: 0.55; }
     .q-item.preview-pending { opacity: 0.30; }
     .q-item.preview-error   { opacity: 0.25; border-style: dashed !important; }
+    .q-item.dragging        { opacity: 0.35; cursor: grabbing; }
+    .q-item.drag-over       { outline: 2px solid var(--accent); outline-offset: 1px; }
+    .q-item-ooo::after      { content: ''; position: absolute; top: 2px; right: 2px; width: 5px; height: 5px; border-radius: 50%; background: #f5c400; pointer-events: none; }
     .q-item .q-num  { font-weight: bold; line-height: 1; }
     .q-item .q-icon { font-size: 9px; line-height: 1; }
 
@@ -552,7 +555,32 @@
       flex-shrink: 0;
       transition: background 0.1s;
     }
-    .music-drag-handle:hover, .music-block.dragging .music-drag-handle {
+    .music-offset-spacer {
+      flex-shrink: 0;
+      height: 22px;
+      display: none;
+      align-items: center;
+      justify-content: flex-end;
+      cursor: ew-resize;
+      border: 1px dashed rgba(255,255,255,0.15);
+      border-radius: 3px;
+      box-sizing: border-box;
+    }
+    .music-offset-spacer:hover { border-color: rgba(255,255,255,0.4); }
+    .music-drag-handle-left {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 7px;
+      height: 100%;
+      cursor: ew-resize;
+      background: rgba(255,255,255,0.15);
+      border-radius: 3px 0 0 3px;
+      flex-shrink: 0;
+      transition: background 0.1s;
+    }
+    .music-drag-handle:hover, .music-block.dragging .music-drag-handle,
+    .music-drag-handle-left:hover, .music-block.dragging .music-drag-handle-left {
       background: rgba(255,255,255,0.35);
     }
     .music-block { position: relative; }
@@ -580,43 +608,34 @@
       display: flex;
       flex-direction: column;
       align-items: center;
+      overflow: hidden;
       justify-content: center;
       font-size: 9px;
       line-height: 1.2;
       cursor: default;
       user-select: none;
-      padding: 2px 4px;
+      padding: 2px 2px;
       text-align: center;
     }
     .q-card-intro {
       width: 48px;  /* 4s × 12px/s */
-      border-color: var(--accent);
-      background: rgba(68,136,255,.06);
-      color: var(--dim);
-      opacity: 0.55;
-    }
-    .q-card-intro.has-title {
-      opacity: 1;
-      background: rgba(68,136,255,.12);
-      color: var(--accent);
+      border-color: #a07800;
+      background: rgba(200,150,0,.10);
+      color: #c8a000;
     }
     .q-card-day {
       width: 24px;  /* 2s × 12px/s */
-      border-color: #3a3a55;
-      background: rgba(80,80,160,.12);
-      color: #8888bb;
+      border-color: #a07800;
+      background: rgba(200,150,0,.10);
+      color: #c8a000;
     }
     .q-card-end {
       width: 60px;  /* 5s × 12px/s */
-      border-color: #333;
-      background: rgba(255,255,255,.02);
-      color: #555;
+      border-color: #a07800;
+      background: rgba(200,150,0,.10);
+      color: #c8a000;
     }
-    .q-card-end:hover { filter: brightness(1.5); }
-    .q-card-end-custom {
-      border-color: #555;
-      color: #888;
-    }
+    .q-card-intro:hover, .q-card-end:hover { filter: brightness(1.25); }
 
     .music-name {
       font-size: 9px;
@@ -756,6 +775,14 @@
       flex-shrink: 0;
     }
     #size-warning.show { display: flex; }
+
+    /* ── Play All mode ── */
+    #play-all-btn.active { background: var(--red); border-color: var(--red); color: #fff; font-weight: bold; }
+    #play-all-btn.active:hover { background: #c04040; }
+    body.play-all-active .btn:not(#play-all-btn) { opacity: 0.35; pointer-events: none; cursor: default; }
+    body.play-all-active label { opacity: 0.35; pointer-events: none; cursor: default; }
+    body.play-all-active .q-item,
+    body.play-all-active .q-card { pointer-events: none; cursor: default; }
   </style>
 </head>
 <body>
@@ -944,6 +971,7 @@
         <div id="queue-actions">
           <button class="btn" onclick="selectAll()" title="Select all clips as TAKE from the beginning">&#10003; Select all</button>
           <button class="btn" onclick="clearAll()" title="Remove all selections">&#10007; Deselect all</button>
+          <button class="btn" onclick="resetClipOrder()" title="Reset clip order to original date &amp; time sequence">&#8635; Reset order</button>
           <label id="day-cards-label" title="Insert day title cards between days in the film"
                  style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:11px;color:var(--dim);user-select:none;white-space:nowrap;margin-left:8px">
             <input type="checkbox" id="day-cards-cb" style="margin:0;cursor:pointer">
@@ -954,6 +982,7 @@
             <input type="checkbox" id="show-skipped-cb" style="margin:0;cursor:pointer">
             show skipped
           </label>
+          <button class="btn" id="play-all-btn" onclick="togglePlayAll()" title="Play all clips and cards from beginning" style="margin-left:auto">&#9654; Play All</button>
         </div>
         <div id="timeline-area">
           <div id="timeline-labels">
@@ -1036,6 +1065,11 @@ let sessionExpired = false;
 // Set to true when navigating to a clip that already has a mark; the first
 // play-through will then stop automatically at mark + 3 s.
 let _fragmentAutoStop = false;
+let _playAllMode      = false;
+let _playAllItems     = [];
+let _playAllIndex     = 0;
+let _playAllSlotIndex = 0;  // which fragment (slot) within the current clip
+let _playAllTimer     = null;
 
 function showSessionExpired() {
   if (sessionExpired) return;
@@ -1159,7 +1193,8 @@ async function showApp() {
   renderMusicBar();
   updateStats();
   const firstTaken = state.clips.findIndex(c => state.selections[c.filename]?.enabled);
-  goToClip(firstTaken >= 0 ? firstTaken : 0);
+  const firstNotSkipped = state.clips.findIndex(c => { const s = state.selections[c.filename]; return !s || s.enabled; });
+  goToClip(firstTaken >= 0 ? firstTaken : firstNotSkipped >= 0 ? firstNotSkipped : 0);
   bindVideo();
 
   pollPreviewStatus();  // start polling – stops automatically when all ready
@@ -1197,9 +1232,11 @@ function bindVideo() {
     // Auto-stop at end of marked fragment (first play-through after navigation or slot click)
     if (_fragmentAutoStop && !v.paused) {
       const mark = state.markSlots[state.activeSlot];
-      if (mark != null && v.currentTime >= mark + 3) {
+      const stopAt = (mark != null ? mark : 0) + 3;
+      if (v.currentTime >= stopAt) {
         v.pause();
         _fragmentAutoStop = false;
+        if (_playAllMode) setTimeout(playAllAdvance, 200);
       }
     }
   });
@@ -1212,7 +1249,10 @@ function bindVideo() {
 
   v.addEventListener('play',  () => { el('play-btn').textContent = '⏸ Pause'; });
   v.addEventListener('pause', () => { el('play-btn').textContent = '▶ Play'; });
-  v.addEventListener('ended', () => { el('play-btn').textContent = '▶ Play'; });
+  v.addEventListener('ended', () => {
+    el('play-btn').textContent = '▶ Play';
+    if (_playAllMode && _fragmentAutoStop) { _fragmentAutoStop = false; playAllAdvance(); }
+  });
 
   v.addEventListener('error', () => {
     console.warn('Video load error:', v.error);
@@ -1255,13 +1295,39 @@ function bindScrubber() {
   document.addEventListener('touchmove', (e) => { if (dragging) seekAt(e.touches[0].clientX); });
   document.addEventListener('touchend',  ()  => { dragging = false; });
 
+  // Left double-click: mark start at clicked position
   container.addEventListener('dblclick', (e) => {
+    if (e.button !== 0) return;
     const rect = container.getBoundingClientRect();
     const pct  = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
     const v    = el('video');
     if (!isFinite(v.duration)) return;
     state.markSlots[state.activeSlot] = pct * v.duration;
     updateMarkInfo();
+    scheduleFramePreview(0);
+  });
+
+  // Right double-click: mark end at clicked position → start = end - 3s
+  let _lastRightClick = 0;
+  container.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    const now = Date.now();
+    if (now - _lastRightClick < 400) {
+      // Double right-click
+      const rect = container.getBoundingClientRect();
+      const pct  = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+      const v    = el('video');
+      if (!isFinite(v.duration)) return;
+      const endTime   = pct * v.duration;
+      const startTime = Math.max(0, endTime - 3);
+      state.markSlots[state.activeSlot] = startTime;
+      v.currentTime = startTime;
+      updateMarkInfo();
+      scheduleFramePreview(0);
+      _lastRightClick = 0;
+    } else {
+      _lastRightClick = now;
+    }
   });
 }
 
@@ -1325,14 +1391,16 @@ function goToClip(idx) {
     state.currentCard = null;
     el('card-preview').style.display   = 'none';
     el('video-wrap').style.display     = '';
-    el('timeline-row').style.display   = '';
-    el('frame-controls').style.display = '';
-    el('action-row').style.display     = '';
-    applyFramePreviewVisibility();
+    if (!_playAllMode) {
+      el('timeline-row').style.display   = '';
+      el('frame-controls').style.display = '';
+      el('action-row').style.display     = '';
+      applyFramePreviewVisibility();
+    }
   }
 
   // Auto-save mark changes when navigating away from a "taken" clip
-  if (idx !== state.current) {
+  if (idx !== state.current && !_playAllMode) {
     const prev    = state.clips[state.current];
     const prevSel = prev && state.selections[prev.filename];
     if (prevSel && prevSel.enabled) {
@@ -1361,7 +1429,7 @@ function goToClip(idx) {
   state.activeSlot = 0;
 
   // Kick off frame extraction immediately — doesn't need video metadata
-  updateFramePreviews();
+  if (!_playAllMode) updateFramePreviews();
 
   _fragmentAutoStop = false;  // reset; will be set in loadedmetadata if mark present
 
@@ -1653,12 +1721,13 @@ function clipDay(clip) {
   return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
 }
 
-// Returns set of days that have at least one enabled clip
+// Returns set of days that have at least one enabled or undecided clip
 function daysWithEnabledClips() {
   const days = new Set();
   state.clips.forEach(clip => {
     const sel = state.selections[clip.filename];
-    if (sel && sel.enabled) days.add(clipDay(clip));
+    // Include day if clip is enabled OR undecided (no selection yet)
+    if (!sel || sel.enabled) days.add(clipDay(clip));
   });
   return days;
 }
@@ -1674,10 +1743,15 @@ function buildQueueItems() {
     const day = clipDay(clip);
     const sel = state.selections[clip.filename];
     const isSkipped = sel && !sel.enabled;
+    // Suppress a day card before clip i if:
+    // - the clip itself jumps forward and will be followed by an earlier clip (has dot: clips[i].modified > clips[i+1].modified)
+    // - or the previous clip jumped forward and this clip is the "return" (prev clip has dot)
+    const prevHasDot = i > 0 && state.clips[i - 1].modified > clip.modified;
+    const thisHasDot = i < state.clips.length - 1 && clip.modified > state.clips[i + 1].modified;
+    const suppressDayCard = prevHasDot || thisHasDot;
     if (day && day !== lastDay) {
-      // Only show day card if at least one clip on that day is enabled
       const hasEnabled = enabledDays.has(day);
-      if (showDayCards && hasEnabled && (!isFirstDay || !state.projectTitle)) {
+      if (showDayCards && hasEnabled && (!isFirstDay || !state.projectTitle) && !suppressDayCard) {
         const disabled    = state.disabledDayCards.has(day);
         const customTitle = state.dayCardTitles[day] || null;
         if (showSkipped || !disabled) {
@@ -1730,10 +1804,16 @@ function renderQueue() {
       const div = document.createElement('div');
       div.className = 'q-item';
       div.id        = `q-${i}`;
-      div.title     = item.clip.filename;
+      div.dataset.clipIdx = i;
+      div.draggable = true;
+      div.title     = item.clip.filename + '\n' + (item.clip.modified || '').replace('T', ' ').substring(0, 19);
       div.innerHTML = `<span class="q-num">${String(i+1).padStart(2,'0')}</span>
                        <span class="q-icon" id="qi-${i}">&#9675;</span>`;
       div.onclick = () => goToClip(i);
+      div.addEventListener('dragstart', onClipDragStart);
+      div.addEventListener('dragover',  onClipDragOver);
+      div.addEventListener('drop',      onClipDrop);
+      div.addEventListener('dragend',   onClipDragEnd);
       container.appendChild(div);
 
     } else if (item.type === 'intro') {
@@ -1743,20 +1823,20 @@ function renderQueue() {
       div.title = hasTitle
         ? `Title card: ${state.projectTitle} – click to select, double-click to edit`
         : 'Title card (no title) – click to select, double-click to edit';
-      div.innerHTML = `<span style="opacity:.6;font-size:8px;letter-spacing:.5px">START</span><span>${state.projectTitle || '—'}</span>`;
+      div.innerHTML = `<span style="font-size:8px;letter-spacing:.5px">TITLE</span>`;
       div.onclick    = () => goToCard({ type: 'intro' });
       div.ondblclick = e => { e.preventDefault(); e.stopPropagation(); openCardEditor('intro'); };
       container.appendChild(div);
 
     } else if (item.type === 'day') {
-      const { top, bottom } = formatDayTile(item.date);
+      const day = item.date.split('-')[2];  // just the day number e.g. "29"
       const div = document.createElement('div');
       div.className = 'q-card q-card-day'
         + (item.dayDisabled  ? ' day-disabled' : '')
         + (item.customTitle  ? ' day-custom'   : '');
       div.id        = `q-card-day-${item.date}`;
       div.title     = `${item.date} – click to select, double-click to rename`;
-      div.innerHTML = `<span>${top}</span><span>${bottom}</span>`;
+      div.innerHTML = `<span>${day}</span>`;
       div.onclick    = () => goToCard({ type: 'day', date: item.date });
       div.ondblclick = e => { e.preventDefault(); e.stopPropagation(); openDayTitleEditor(item.date); };
       container.appendChild(div);
@@ -1764,11 +1844,11 @@ function renderQueue() {
     } else if (item.type === 'end') {
       const endTitle = state.endCardTitle || 'The End';
       const div = document.createElement('div');
-      div.className  = 'q-card q-card-end' + (state.endCardTitle ? ' q-card-end-custom' : '');
+      div.className  = 'q-card q-card-end';
       div.id         = 'q-card-end';
       div.title      = `End card: ${endTitle} – click to select, double-click to edit`;
       div.style.cursor = 'pointer';
-      div.innerHTML  = `<span style="opacity:.6;font-size:8px;letter-spacing:.5px">END</span><span>${endTitle}</span>`;
+      div.innerHTML  = `<span style="font-size:8px;letter-spacing:.5px">END</span>`;
       div.onclick    = () => goToCard({ type: 'end' });
       div.ondblclick = e => { e.preventDefault(); e.stopPropagation(); openCardEditor('end'); };
       container.appendChild(div);
@@ -1779,6 +1859,18 @@ function renderQueue() {
   state.clips.forEach(clip => updateQueueItem(clip.filename));
   updateQueueHighlight();
   if (state.currentCard) updateCardPreview();
+
+  // Mark out-of-order clips (newer than the next clip in the sequence)
+  state.clips.forEach((clip, i) => {
+    if (i >= state.clips.length - 1) return;
+    const div = el(`q-${i}`);
+    if (!div) return;
+    const next = state.clips[i + 1];
+    if (clip.modified > next.modified) {
+      div.classList.add('q-item-ooo');
+      div.title += '\n⚠ newer than next clip';
+    }
+  });
 }
 
 function updateQueueItem(filename) {
@@ -1795,7 +1887,9 @@ function updateQueueItem(filename) {
   const showSkipped = el('show-skipped-cb') ? el('show-skipped-cb').checked : true;
   div.style.display = (!showSkipped && isSkipped) ? 'none' : '';
 
+  const wasOoo = div.classList.contains('q-item-ooo');
   div.className = 'q-item';
+  if (wasOoo) div.classList.add('q-item-ooo');
 
   // Preview status class (opacity layer)
   if (ps === 'working') div.classList.add('preview-working');
@@ -1873,11 +1967,23 @@ function renderMusicBar() {
 
   state.musicTracks.forEach((track, i) => {
     const hue = MUSIC_HUES[i % MUSIC_HUES.length];
+    // Spacer representing silence/offset before this track (shown only when offset > 0)
+    const spacer = document.createElement('div');
+    spacer.id = `music-offset-${i}`;
+    spacer.className = 'music-offset-spacer';
+    container.appendChild(spacer);
+    // Track block
     const div = document.createElement('div');
     div.className = 'music-block';
     div.id = `music-${i}`;
     div.style.background = `hsl(${hue}, 45%, 22%)`;
     div.style.borderColor = `hsl(${hue}, 55%, 40%)`;
+    // Left handle — drag to set timeline offset (shift block right/left)
+    const handleLeft = document.createElement('div');
+    handleLeft.className = 'music-drag-handle-left';
+    handleLeft.title = 'Drag left/right to set when music starts in the film';
+    bindMusicDragHandleLeft(handleLeft, i);
+    div.appendChild(handleLeft);
     const name = track.filename.replace(/\.[^.]+$/, '');
     const nameEl = document.createElement('span');
     nameEl.className = 'music-name';
@@ -1939,14 +2045,20 @@ function updateMusicBar() {
 
   let musicTotal = 0;
   state.musicTracks.forEach((track, i) => {
-    const div = el(`music-${i}`);
+    const div    = el(`music-${i}`);
+    const spacer = el(`music-offset-${i}`);
     if (!div) return;
-    const effectiveDur = (track.track_end != null && track.track_end < track.duration)
-      ? track.track_end : track.duration;
+    const offset = track.track_offset ?? 0;
+    const effectiveDur = trackEffectiveDur(track);
+    if (spacer) {
+      const sw = Math.round(offset * pxPerSec);
+      spacer.style.width   = sw + 'px';
+      spacer.style.display = sw > 0 ? 'flex' : 'none';
+    }
     const w = Math.max(8, Math.round(effectiveDur * pxPerSec));
     div.style.width = w + 'px';
     updateMusicBlockTitle(div, track);
-    musicTotal += effectiveDur;
+    musicTotal += offset + effectiveDur;
   });
 
   // Update total duration display on stats
@@ -1974,11 +2086,18 @@ function updateMusicBar() {
   }
 }
 
-function updateMusicBlockTitle(div, track) {
-  const effectiveDur = (track.track_end != null && track.track_end < track.duration)
+function trackEffectiveDur(track) {
+  const end = (track.track_end != null && track.track_end < track.duration)
     ? track.track_end : track.duration;
+  return Math.max(1, end);
+}
+
+function updateMusicBlockTitle(div, track) {
+  const effectiveDur = trackEffectiveDur(track);
+  const offset = track.track_offset ?? 0;
   const trimmed = effectiveDur < track.duration - 0.5;
-  div.title = `${track.filename}  (${effectiveDur.toFixed(1)}s${trimmed ? ' / ' + track.duration.toFixed(1) + 's total' : ''})`;
+  const offsetStr = offset > 0.5 ? ` starts at ${offset.toFixed(1)}s` : '';
+  div.title = `${track.filename}  (${effectiveDur.toFixed(1)}s${offsetStr}${trimmed ? ' / ' + track.duration.toFixed(1) + 's total' : ''})`;
 }
 
 // ── Music track-end drag ──────────────────────────────────────────────────────
@@ -2014,11 +2133,13 @@ let _musicDragSaveTimer = null;
 function saveMusicEnds() {
   clearTimeout(_musicDragSaveTimer);
   _musicDragSaveTimer = setTimeout(() => {
-    const ends = {};
+    const ends    = {};
+    const offsets = {};
     state.musicTracks.forEach(t => {
-      if (t.track_end != null && t.track_end < t.duration) ends[t.filename] = t.track_end;
+      if (t.track_end    != null && t.track_end    < t.duration) ends[t.filename]    = t.track_end;
+      if (t.track_offset != null && t.track_offset > 0)          offsets[t.filename] = t.track_offset;
     });
-    api('POST', '/api/music_ends', { music_ends: ends }).catch(e => console.error('music_ends save error:', e));
+    api('POST', '/api/music_ends', { music_ends: ends, music_offsets: offsets }).catch(e => console.error('music_ends save error:', e));
   }, 400);
 }
 
@@ -2029,12 +2150,13 @@ function bindMusicDragHandle(handle, trackIdx) {
     const pxPerSec = PX_PER_3S / 3;
     const snapTargets = videoBoundaries();  // cumulative seconds
 
-    // Compute offset of this track's start within the music timeline
+    // Compute where this track's audio starts in the film timeline
     let trackStartSec = 0;
     for (let j = 0; j < trackIdx; j++) {
       const t = state.musicTracks[j];
-      trackStartSec += (t.track_end != null && t.track_end < t.duration) ? t.track_end : t.duration;
+      trackStartSec += (t.track_offset ?? 0) + trackEffectiveDur(t);
     }
+    trackStartSec += state.musicTracks[trackIdx].track_offset ?? 0;
 
     const startX = e.clientX;
     const track  = state.musicTracks[trackIdx];
@@ -2058,8 +2180,6 @@ function bindMusicDragHandle(handle, trackIdx) {
       }
 
       track.track_end = newEnd;
-      // Shift subsequent tracks: their positions follow automatically since
-      // updateMusicBar reads effective duration which we just changed.
       updateMusicBar();
     }
 
@@ -2073,6 +2193,94 @@ function bindMusicDragHandle(handle, trackIdx) {
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
   });
+}
+
+function bindMusicDragHandleLeft(handle, trackIdx) {
+  handle.addEventListener('mousedown', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    const pxPerSec   = PX_PER_3S / 3;
+    const snapTargets = videoBoundaries();
+
+    // Cumulative end of all previous tracks in the timeline
+    let prevEnd = 0;
+    for (let j = 0; j < trackIdx; j++) {
+      const t = state.musicTracks[j];
+      prevEnd += (t.track_offset ?? 0) + trackEffectiveDur(t);
+    }
+
+    const startX      = e.clientX;
+    const track       = state.musicTracks[trackIdx];
+    const origOffset  = track.track_offset ?? 0;
+    const blockDiv    = el(`music-${trackIdx}`);
+    if (blockDiv) blockDiv.classList.add('dragging');
+
+    function onMove(e2) {
+      const dx = e2.clientX - startX;
+      const deltaSec = dx / pxPerSec;
+      let newOffset = Math.max(0, origOffset + deltaSec);
+
+      // Snap the left edge of this block to video boundaries
+      const snapPx = 5 / pxPerSec;
+      const absLeft = prevEnd + newOffset;
+      for (const b of snapTargets) {
+        if (Math.abs(absLeft - b) <= snapPx) { newOffset = Math.max(0, b - prevEnd); break; }
+      }
+
+      track.track_offset = newOffset < 0.05 ? 0 : newOffset;
+      updateMusicBar();
+    }
+
+    function onUp() {
+      if (blockDiv) blockDiv.classList.remove('dragging');
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      saveMusicEnds();
+    }
+
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+}
+
+// ── Clip drag-and-drop reorder ────────────────────────────────────────────────
+let _dragSrcIdx = null;
+
+function onClipDragStart(e) {
+  _dragSrcIdx = parseInt(this.dataset.clipIdx);
+  e.dataTransfer.effectAllowed = 'move';
+  this.classList.add('dragging');
+}
+
+function onClipDragOver(e) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  document.querySelectorAll('.q-item').forEach(d => d.classList.remove('drag-over'));
+  this.classList.add('drag-over');
+}
+
+function onClipDrop(e) {
+  e.preventDefault();
+  const targetIdx = parseInt(this.dataset.clipIdx);
+  if (_dragSrcIdx === null || _dragSrcIdx === targetIdx) return;
+  const moved = state.clips.splice(_dragSrcIdx, 1)[0];
+  state.clips.splice(targetIdx, 0, moved);
+  renderQueue();
+  updateMusicBar();
+  const order = state.clips.map(c => c.filename);
+  api('POST', '/api/clip_order', { clip_order: order }).catch(e => console.error('clip_order save error:', e));
+}
+
+function onClipDragEnd() {
+  document.querySelectorAll('.q-item').forEach(d => d.classList.remove('dragging', 'drag-over'));
+  _dragSrcIdx = null;
+}
+
+async function resetClipOrder() {
+  state.clips.sort((a, b) => a.modified < b.modified ? -1 : a.modified > b.modified ? 1 : 0);
+  renderQueue();
+  updateMusicBar();
+  await api('POST', '/api/clip_order', { clip_order: [] }).catch(e => console.error('clip_order reset error:', e));
 }
 
 
@@ -2515,6 +2723,12 @@ document.addEventListener('keydown', e => {
   }
   if (el('app').style.display === 'none') return;
 
+  // Play All active: only Escape is allowed
+  if (_playAllMode) {
+    if (e.key === 'Escape') { e.preventDefault(); stopPlayAll(); }
+    return;
+  }
+
   // In card preview mode: Escape goes back to current clip; all other keys blocked
   if (state.currentCard) {
     if (e.key === 'Escape') { e.preventDefault(); goToClip(state.current); }
@@ -2565,6 +2779,123 @@ async function shutdownApp() {
     await api('POST', '/api/shutdown', {});
   } catch(e) { /* expected – server closes */ }
   document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;color:#777;font-family:monospace">Server stopped. You can close this tab.</div>';
+}
+
+// ── Play All ──────────────────────────────────────────────────────────────────
+function togglePlayAll() {
+  if (_playAllMode) stopPlayAll(); else startPlayAll();
+}
+
+function startPlayAll() {
+  const allItems = buildQueueItems();
+  _playAllItems = allItems.filter(item => {
+    if (item.type === 'intro' || item.type === 'end') return true;
+    if (item.type === 'day')  return !item.dayDisabled;
+    if (item.type === 'clip') {
+      const sel = state.selections[item.clip.filename];
+      return sel && sel.enabled === true;
+    }
+    return false;
+  });
+  if (_playAllItems.length === 0) return;
+  _playAllMode      = true;
+  _playAllIndex     = 0;
+  _playAllSlotIndex = 0;
+  document.body.classList.add('play-all-active');
+  // Hide clip manipulation UI
+  el('frame-preview-left').style.display  = 'none';
+  el('frame-preview-right').style.display = 'none';
+  el('timeline-row').style.display   = 'none';
+  el('frame-controls').style.display = 'none';
+  el('action-row').style.display     = 'none';
+  const btn = el('play-all-btn');
+  btn.innerHTML = '&#9632; Stop';
+  btn.classList.add('active');
+  playAllPlayItem(_playAllItems[0], 0);
+}
+
+function stopPlayAll() {
+  _playAllMode = false;
+  if (_playAllTimer !== null) { clearTimeout(_playAllTimer); _playAllTimer = null; }
+  const v = el('video');
+  if (!v.paused) v.pause();
+  _fragmentAutoStop = false;
+  document.body.classList.remove('play-all-active');
+  // Restore clip manipulation UI
+  el('timeline-row').style.display   = '';
+  el('frame-controls').style.display = '';
+  el('action-row').style.display     = '';
+  applyFramePreviewVisibility();
+  const btn = el('play-all-btn');
+  btn.innerHTML = '&#9654; Play All';
+  btn.classList.remove('active');
+}
+
+function playAllAdvance() {
+  _playAllTimer = null;
+  if (!_playAllMode) return;
+  // Check if there are more fragments (slots) in the current clip
+  const item = _playAllItems[_playAllIndex];
+  if (item && item.type === 'clip') {
+    const sel   = state.selections[item.clip.filename];
+    const slots = [sel?.start_time ?? null, ...(sel?.extra_starts || [])];
+    const nextSlot = _playAllSlotIndex + 1;
+    if (nextSlot < slots.length) {
+      _playAllSlotIndex = nextSlot;
+      playAllPlayItem(item, nextSlot);
+      return;
+    }
+  }
+  // Move to next queue item
+  _playAllSlotIndex = 0;
+  _playAllIndex++;
+  if (_playAllIndex >= _playAllItems.length) { stopPlayAll(); return; }
+  playAllPlayItem(_playAllItems[_playAllIndex], 0);
+}
+
+function playAllPlayItem(item, slotIndex) {
+  if (!_playAllMode) return;
+  if (item.type === 'intro') {
+    goToCard({ type: 'intro' });
+    _playAllTimer = setTimeout(playAllAdvance, 4000);
+  } else if (item.type === 'day') {
+    goToCard({ type: 'day', date: item.date });
+    _playAllTimer = setTimeout(playAllAdvance, 2000);
+  } else if (item.type === 'end') {
+    goToCard({ type: 'end' });
+    _playAllTimer = setTimeout(playAllAdvance, 5000);
+  } else if (item.type === 'clip') {
+    if (!isClipReady(item.clip.filename)) {
+      _playAllTimer = setTimeout(playAllAdvance, 100); // skip unready clips
+      return;
+    }
+    const sel   = state.selections[item.clip.filename];
+    const slots = [sel?.start_time ?? null, ...(sel?.extra_starts || [])];
+    const mark  = slots[slotIndex] ?? null;
+    const startT = mark ?? 0;
+    // Only call goToClip (which reloads video) for the first slot; subsequent slots
+    // just seek within the already-loaded video.
+    if (slotIndex === 0) {
+      goToClip(item.clipIdx);
+      el('video').addEventListener('loadedmetadata', function onPlayAllMeta() {
+        if (!_playAllMode) return;
+        // Ensure timeupdate uses this slot's start time for stopAt calculation
+        state.markSlots[0] = startT;
+        state.activeSlot   = 0;
+        el('video').currentTime = startT;
+        _fragmentAutoStop = true;
+        el('video').play().catch(() => {});
+      }, { once: true });
+    } else {
+      const v = el('video');
+      // Ensure timeupdate uses this slot's start time for stopAt calculation
+      state.markSlots[0] = startT;
+      state.activeSlot   = 0;
+      v.currentTime = startT;
+      _fragmentAutoStop = true;
+      v.play().catch(() => {});
+    }
+  }
 }
 
 // ── KB help ───────────────────────────────────────────────────────────────────

@@ -246,14 +246,16 @@ def scan_folder(folder):
     return clips
 
 
+MUSIC_EXTS = {'.mp3', '.flac', '.wav', '.aac', '.ogg', '.m4a'}
+
 def scan_music(folder):
-    """Return list of music track dicts from folder/music/*.mp3, sorted alphabetically."""
+    """Return list of music track dicts from folder/music/, sorted alphabetically."""
     music_dir = os.path.join(folder, 'music')
     if not os.path.isdir(music_dir):
         return []
     tracks = []
     try:
-        names = sorted(n for n in os.listdir(music_dir) if n.lower().endswith('.mp3'))
+        names = sorted(n for n in os.listdir(music_dir) if os.path.splitext(n.lower())[1] in MUSIC_EXTS)
     except Exception as e:
         print(f'Music scan error: {e}')
         return []
@@ -334,8 +336,10 @@ DAYS_PL = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', '
 
 def load_selections(folder):
     """Returns (selections_dict, title, subtitle, disabled_day_cards, day_card_titles,
-    end_card_title, end_card_subtitle, music_ends, has_saved).
-    music_ends: dict filename->track_end_seconds (trimmed duration per track).
+    end_card_title, end_card_subtitle, music_ends, music_offsets, clip_order, has_saved).
+    music_ends: dict filename->track_end_seconds.
+    music_offsets: dict filename->track_offset_seconds (silence before track in film timeline).
+    clip_order: list of filenames in user-defined order (empty = use default mtime order).
     has_saved=True means a selections.json was found for this folder."""
     path = os.path.join(folder, 'selections.json')
     if os.path.isfile(path):
@@ -343,20 +347,22 @@ def load_selections(folder):
             with open(path, encoding='utf-8') as f:
                 data = json.load(f)
             if data.get('source_folder') == folder:
-                sel        = {s['filename']: s for s in data.get('selections', [])}
-                disabled   = set(data.get('disabled_day_cards', []))
-                day_titles = data.get('day_card_titles', {})
-                end_title  = data.get('end_card_title', '')
-                end_sub    = data.get('end_card_subtitle', '')
-                music_ends = data.get('music_ends', {})
+                sel           = {s['filename']: s for s in data.get('selections', [])}
+                disabled      = set(data.get('disabled_day_cards', []))
+                day_titles    = data.get('day_card_titles', {})
+                end_title     = data.get('end_card_title', '')
+                end_sub       = data.get('end_card_subtitle', '')
+                music_ends    = data.get('music_ends', {})
+                music_offsets = data.get('music_offsets', data.get('music_starts', {}))  # back-compat
+                clip_order    = data.get('clip_order', [])
                 return (sel, data.get('title', ''), data.get('subtitle', ''),
-                        disabled, day_titles, end_title, end_sub, music_ends, True)
+                        disabled, day_titles, end_title, end_sub, music_ends, music_offsets, clip_order, True)
         except Exception as e:
             print(f'Load selections error: {e}')
-    return {}, '', '', set(), {}, '', '', {}, False
+    return {}, '', '', set(), {}, '', '', {}, {}, [], False
 
 
-def save_selections(folder, selections, title='', subtitle='', disabled_day_cards=None, day_card_titles=None, end_card_title='', end_card_subtitle='', music_ends=None):
+def save_selections(folder, selections, title='', subtitle='', disabled_day_cards=None, day_card_titles=None, end_card_title='', end_card_subtitle='', music_ends=None, music_offsets=None, clip_order=None):
     path = os.path.join(folder, 'selections.json')
     data = {
         'source_folder': folder,
@@ -370,12 +376,40 @@ def save_selections(folder, selections, title='', subtitle='', disabled_day_card
         'end_card_title': end_card_title,
         'end_card_subtitle': end_card_subtitle,
         'music_ends': music_ends or {},
+        'music_offsets': music_offsets or {},
+        'clip_order': clip_order or [],
     }
     try:
         with open(path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
     except Exception as e:
         print(f'Save selections error: {e}')
+
+
+def apply_clip_order(clips, clip_order):
+    """Merge saved clip_order with freshly scanned clips.
+    Known clips keep their saved order; new clips are inserted at their mtime position."""
+    if not clip_order:
+        return clips
+    by_name = {c['filename']: c for c in clips}
+    # Known clips that still exist, in saved order
+    ordered = [by_name[fn] for fn in clip_order if fn in by_name]
+    # New clips not present in saved order
+    known = set(clip_order)
+    new_clips = [c for c in clips if c['filename'] not in known]
+    if not new_clips:
+        return ordered
+    # Insert each new clip at its natural mtime position (clips from scan_folder are mtime-sorted)
+    result = list(ordered)
+    for new_clip in new_clips:
+        new_mtime = new_clip['modified']  # ISO string – sorts lexicographically = chronologically
+        insert_at = len(result)
+        for j, c in enumerate(result):
+            if c['modified'] > new_mtime:
+                insert_at = j
+                break
+        result.insert(insert_at, new_clip)
+    return result
 
 # ─── GPU / encoder helpers ────────────────────────────────────────────────────
 
@@ -646,25 +680,31 @@ def _add_music_to_video(folder, video_path, out_path, music_tracks):
     for p in music_paths:
         inputs += ['-i', p]
 
-    # Build filter_complex: trim each track to track_end if set, concat, then mix with video
+    # Build filter_complex: trim each track to track_end, add offset silence, concat, mix with video
+    # track_offset = silence (ms) before the track in the film timeline
     parts = []
-    if n == 1:
-        te = music_tracks[0].get('track_end')
-        if te is not None and te < music_tracks[0]['duration']:
-            parts.append(f'[1:a]atrim=0:{te:.3f},asetpts=PTS-STARTPTS[mus_t0]')
-            prefix = '[mus_t0]'
+    processed = []
+    for i, t in enumerate(music_tracks):
+        src    = f'[{i+1}:a]'
+        label  = f'[mus_t{i}]'
+        te     = t.get('track_end')
+        offset = t.get('track_offset') or 0
+        filters = []
+        if te is not None and te < t['duration']:
+            filters.append(f'atrim=0:{te:.3f},asetpts=PTS-STARTPTS')
+        if offset > 0:
+            delay_ms = int(round(offset * 1000))
+            filters.append(f'adelay={delay_ms}|{delay_ms}')
+        if filters:
+            parts.append(f'{src}' + ','.join(filters) + f'{label}')
+            processed.append(label)
         else:
-            prefix = '[1:a]'
+            processed.append(src)
+
+    if n == 1:
+        prefix = processed[0]
     else:
-        trimmed = []
-        for i, t in enumerate(music_tracks):
-            te = t.get('track_end')
-            if te is not None and te < t['duration']:
-                parts.append(f'[{i+1}:a]atrim=0:{te:.3f},asetpts=PTS-STARTPTS[mus_t{i}]')
-                trimmed.append(f'[mus_t{i}]')
-            else:
-                trimmed.append(f'[{i+1}:a]')
-        concat_ins = ''.join(trimmed)
+        concat_ins = ''.join(processed)
         parts.append(f'{concat_ins}concat=n={n}:v=0:a=1[mus_raw]')
         prefix = '[mus_raw]'
 
@@ -1225,7 +1265,7 @@ class Handler(BaseHTTPRequestHandler):
             if not clips:
                 self.send_json({'error': 'No MP4 files found in folder'}, 400)
                 return
-            sel, title, subtitle, disabled_days, day_titles, end_title, end_sub, music_ends, has_saved = load_selections(folder)
+            sel, title, subtitle, disabled_days, day_titles, end_title, end_sub, music_ends, music_offsets, clip_order, has_saved = load_selections(folder)
             if not has_saved:
                 # First load – apply defaults: title = folder basename, subtitle = date of first clip
                 title = os.path.basename(folder.rstrip('/\\'))
@@ -1235,11 +1275,14 @@ class Handler(BaseHTTPRequestHandler):
                     subtitle = dt.strftime('%d-%m-%Y')
                 except Exception:
                     pass
+            clips = apply_clip_order(clips, clip_order)
             music = scan_music(folder)
-            # Apply saved track_end values to music tracks
+            # Apply saved track_end and track_offset values to music tracks
             for t in music:
                 if t['filename'] in music_ends:
                     t['track_end'] = float(music_ends[t['filename']])
+                if t['filename'] in music_offsets:
+                    t['track_offset'] = float(music_offsets[t['filename']])
             with state_lock:
                 state['folder']             = folder
                 state['clips']              = clips
@@ -1252,7 +1295,7 @@ class Handler(BaseHTTPRequestHandler):
                 state['end_card_title']     = end_title
                 state['end_card_subtitle']  = end_sub
             if not has_saved and folder:
-                save_selections(folder, sel, title, subtitle, disabled_days, day_titles, end_title, end_sub)
+                save_selections(folder, sel, title, subtitle, disabled_days, day_titles, end_title, end_sub, clip_order=[c['filename'] for c in clips])
             print(f'Loaded {len(clips)} clips, {len(sel)} saved decisions, {len(music)} tracks')
             threading.Thread(target=pregenerate_hevc_previews, args=(folder, clips), daemon=True).start()
             self.send_json({'ok': True, 'count': len(clips)})
@@ -1277,8 +1320,9 @@ class Handler(BaseHTTPRequestHandler):
                 sel_copy   = dict(state['selections'])
                 disabled   = list(state['disabled_day_cards'])
                 day_titles = dict(state['day_card_titles'])
+                cur_order  = [c['filename'] for c in state['clips']]
             if folder:
-                save_selections(folder, sel_copy, title, subtitle, disabled, day_titles, end_title, end_sub)
+                save_selections(folder, sel_copy, title, subtitle, disabled, day_titles, end_title, end_sub, clip_order=cur_order)
             self.send_json({'ok': True})
 
         elif path == '/api/settings':
@@ -1293,8 +1337,9 @@ class Handler(BaseHTTPRequestHandler):
                 day_titles = dict(state['day_card_titles'])
                 end_title  = state['end_card_title']
                 end_sub    = state['end_card_subtitle']
+                cur_order  = [c['filename'] for c in state['clips']]
             if folder:
-                save_selections(folder, sel_copy, title, subtitle, disabled, day_titles, end_title, end_sub)
+                save_selections(folder, sel_copy, title, subtitle, disabled, day_titles, end_title, end_sub, clip_order=cur_order)
             self.send_json({'ok': True})
 
         elif path == '/api/export':
@@ -1377,8 +1422,9 @@ class Handler(BaseHTTPRequestHandler):
                 day_titles= dict(state['day_card_titles'])
                 end_title = state['end_card_title']
                 end_sub   = state['end_card_subtitle']
+                cur_order = [c['filename'] for c in state['clips']]
             if folder:
-                save_selections(folder, sel_copy, title, subtitle, disabled, day_titles, end_title, end_sub)
+                save_selections(folder, sel_copy, title, subtitle, disabled, day_titles, end_title, end_sub, clip_order=cur_order)
             self.send_json({'ok': True})
 
         elif path == '/api/day_card_title':
@@ -1401,9 +1447,10 @@ class Handler(BaseHTTPRequestHandler):
                 day_titles = dict(state['day_card_titles'])
                 end_title  = state['end_card_title']
                 end_sub    = state['end_card_subtitle']
+                cur_order  = [c['filename'] for c in state['clips']]
             if folder:
                 _delete_day_card_cache(folder, date_str)
-                save_selections(folder, sel_copy, title, subtitle, disabled, day_titles, end_title, end_sub)
+                save_selections(folder, sel_copy, title, subtitle, disabled, day_titles, end_title, end_sub, clip_order=cur_order)
             self.send_json({'ok': True})
 
         elif path == '/api/end_card_title':
@@ -1418,21 +1465,27 @@ class Handler(BaseHTTPRequestHandler):
                 subtitle   = state['subtitle']
                 disabled   = list(state['disabled_day_cards'])
                 day_titles = dict(state['day_card_titles'])
+                cur_order  = [c['filename'] for c in state['clips']]
             if folder:
                 _delete_end_card_cache(folder)
-                save_selections(folder, sel_copy, title, subtitle, disabled, day_titles, title_text, subtitle_text)
+                save_selections(folder, sel_copy, title, subtitle, disabled, day_titles, title_text, subtitle_text, clip_order=cur_order)
             self.send_json({'ok': True})
 
         elif path == '/api/music_ends':
-            # music_ends: {filename: track_end_seconds} — saves trimmed end per track
-            ends = data.get('music_ends', {})
+            # music_ends: {filename: track_end_seconds}, music_offsets: {filename: track_offset_seconds}
+            ends    = data.get('music_ends', {})
+            offsets = data.get('music_offsets', {})
             with state_lock:
                 for track in state['music']:
                     fname = track['filename']
                     if fname in ends:
                         track['track_end'] = float(ends[fname])
                     elif 'track_end' in track:
-                        del track['track_end']  # reset to full duration
+                        del track['track_end']
+                    if fname in offsets:
+                        track['track_offset'] = float(offsets[fname])
+                    elif 'track_offset' in track:
+                        del track['track_offset']
                 folder     = state['folder']
                 sel_copy   = dict(state['selections'])
                 title      = state['title']
@@ -1441,9 +1494,34 @@ class Handler(BaseHTTPRequestHandler):
                 day_titles = dict(state['day_card_titles'])
                 end_title  = state['end_card_title']
                 end_sub    = state['end_card_subtitle']
-                music_ends_save = {t['filename']: t['track_end'] for t in state['music'] if 'track_end' in t}
+                music_ends_save    = {t['filename']: t['track_end']    for t in state['music'] if 'track_end'    in t}
+                music_offsets_save = {t['filename']: t['track_offset'] for t in state['music'] if 'track_offset' in t}
+                cur_order  = [c['filename'] for c in state['clips']]
             if folder:
-                save_selections(folder, sel_copy, title, subtitle, disabled, day_titles, end_title, end_sub, music_ends_save)
+                save_selections(folder, sel_copy, title, subtitle, disabled, day_titles, end_title, end_sub, music_ends_save, music_offsets_save, clip_order=cur_order)
+            self.send_json({'ok': True})
+
+        elif path == '/api/clip_order':
+            order = data.get('clip_order', [])
+            with state_lock:
+                folder     = state['folder']
+                by_name    = {c['filename']: c for c in state['clips']}
+                if order:
+                    state['clips'] = [by_name[fn] for fn in order if fn in by_name]
+                else:
+                    # Reset: sort by mtime (modified ISO string)
+                    state['clips'].sort(key=lambda c: c['modified'])
+                sel_copy   = dict(state['selections'])
+                title      = state['title']
+                subtitle   = state['subtitle']
+                disabled   = list(state['disabled_day_cards'])
+                day_titles = dict(state['day_card_titles'])
+                end_title  = state['end_card_title']
+                end_sub    = state['end_card_subtitle']
+                music_ends_save    = {t['filename']: t['track_end']    for t in state['music'] if 'track_end'    in t}
+                music_offsets_save = {t['filename']: t['track_offset'] for t in state['music'] if 'track_offset' in t}
+            if folder:
+                save_selections(folder, sel_copy, title, subtitle, disabled, day_titles, end_title, end_sub, music_ends_save, music_offsets_save, clip_order=order)
             self.send_json({'ok': True})
 
         elif path == '/api/clear-cache':
@@ -1728,7 +1806,7 @@ def main():
         if not clips:
             print(f'ERROR: No MP4 files in: {folder}')
             sys.exit(1)
-        sel, title, subtitle, disabled_days, day_titles, end_title, end_sub, music_ends, has_saved = load_selections(folder)
+        sel, title, subtitle, disabled_days, day_titles, end_title, end_sub, music_ends, music_offsets, clip_order, has_saved = load_selections(folder)
         if not has_saved:
             title = os.path.basename(folder.rstrip('/\\'))
             try:
@@ -1737,11 +1815,14 @@ def main():
                 subtitle = dt.strftime('%d-%m-%Y')
             except Exception:
                 pass
+        clips = apply_clip_order(clips, clip_order)
         music = scan_music(folder)
-        # Apply saved track_end values to music tracks
+        # Apply saved track_end and track_offset values to music tracks
         for t in music:
             if t['filename'] in music_ends:
                 t['track_end'] = float(music_ends[t['filename']])
+            if t['filename'] in music_offsets:
+                t['track_offset'] = float(music_offsets[t['filename']])
         with state_lock:
             state['folder']             = folder
             state['clips']              = clips
@@ -1754,7 +1835,7 @@ def main():
             state['end_card_title']     = end_title
             state['end_card_subtitle']  = end_sub
         if not has_saved and folder:
-            save_selections(folder, sel, title, subtitle, disabled_days, day_titles, end_title, end_sub)
+            save_selections(folder, sel, title, subtitle, disabled_days, day_titles, end_title, end_sub, clip_order=[c['filename'] for c in clips])
         print(f'Loaded {len(clips)} clips, {len(music)} tracks')
         threading.Thread(target=pregenerate_hevc_previews, args=(folder, clips), daemon=True).start()
 
