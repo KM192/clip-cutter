@@ -312,6 +312,24 @@
       gap: 4px;
       align-items: center;
     }
+    #clip-dur-label {
+      font-size: 10px;
+      color: var(--dim);
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      margin-left: 2px;
+    }
+    #clip-dur-sel {
+      background: var(--bg2);
+      color: var(--fg);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      font-size: 10px;
+      padding: 1px 2px;
+      cursor: pointer;
+    }
+    #clip-dur-sel:hover { border-color: #555; }
     #slots-list {
       display: flex;
       flex-direction: column;
@@ -952,6 +970,21 @@
             <button class="btn" id="dup-btn" onclick="addSlot()" title="Add a second fragment with a different start">
               + duplicate
             </button>
+            <label id="clip-dur-label" title="Default clip length in seconds">
+              <select id="clip-dur-sel" onchange="setClipDuration(this.value)">
+                <option value="0.5">0.5s</option>
+                <option value="1">1s</option>
+                <option value="2">2s</option>
+                <option value="3" selected>3s</option>
+                <option value="4">4s</option>
+                <option value="5">5s</option>
+                <option value="6">6s</option>
+                <option value="7">7s</option>
+                <option value="8">8s</option>
+                <option value="9">9s</option>
+                <option value="10">10s</option>
+              </select>
+            </label>
           </div>
           <div id="slots-list"></div>
         </div>
@@ -1055,6 +1088,7 @@ const state = {
   exportStartTime: null,
   etaSamples: [],           // [{t, pct}] sliding window for ETA rate calculation
   musicTracks: [],          // [{filename, duration}] from folder/music/*.mp3
+  clipDuration: 3.0,        // seconds each clip is cut to (configurable)
 };
 
 // ── Session ───────────────────────────────────────────────────────────────────
@@ -1063,7 +1097,7 @@ let sessionExpired = false;
 
 // ── Fragment auto-stop ────────────────────────────────────────────────────────
 // Set to true when navigating to a clip that already has a mark; the first
-// play-through will then stop automatically at mark + 3 s.
+// play-through will then stop automatically at mark + clipDuration s.
 let _fragmentAutoStop = false;
 let _playAllMode      = false;
 let _playAllItems     = [];
@@ -1177,6 +1211,7 @@ async function loadClipsFromServer() {
   state.dayCardTitles    = selData.day_card_titles || {};
   state.endCardTitle     = selData.end_card_title    || state.endCardTitle;
   state.endCardSubtitle  = selData.end_card_subtitle || state.endCardSubtitle;
+  state.clipDuration     = selData.clip_duration ?? 3.0;
   state.musicTracks      = musicData.tracks   || [];
 }
 
@@ -1189,6 +1224,8 @@ async function showApp() {
   bindFramesPreview();
   bindDayCards();     // must run before renderQueue so checkbox state is set
   bindShowSkipped();  // must run before renderQueue so checkbox state is set
+  const durSel = el('clip-dur-sel');
+  if (durSel) durSel.value = state.clipDuration;
   renderQueue();
   renderMusicBar();
   updateStats();
@@ -1232,7 +1269,7 @@ function bindVideo() {
     // Auto-stop at end of marked fragment (first play-through after navigation or slot click)
     if (_fragmentAutoStop && !v.paused) {
       const mark = state.markSlots[state.activeSlot];
-      const stopAt = (mark != null ? mark : 0) + 3;
+      const stopAt = (mark != null ? mark : 0) + state.clipDuration;
       if (v.currentTime >= stopAt) {
         v.pause();
         _fragmentAutoStop = false;
@@ -1307,7 +1344,7 @@ function bindScrubber() {
     scheduleFramePreview(0);
   });
 
-  // Right double-click: mark end at clicked position → start = end - 3s
+  // Right double-click: mark end at clicked position → start = end - clipDuration s
   let _lastRightClick = 0;
   container.addEventListener('contextmenu', (e) => {
     e.preventDefault();
@@ -1319,7 +1356,7 @@ function bindScrubber() {
       const v    = el('video');
       if (!isFinite(v.duration)) return;
       const endTime   = pct * v.duration;
-      const startTime = Math.max(0, endTime - 3);
+      const startTime = Math.max(0, endTime - state.clipDuration);
       state.markSlots[state.activeSlot] = startTime;
       v.currentTime = startTime;
       updateMarkInfo();
@@ -1445,7 +1482,7 @@ function goToClip(idx) {
       const t = state.markSlots[0];
       if (t != null) {
         v.currentTime = t;
-        _fragmentAutoStop = true;  // stop automatically at t + 3s
+        _fragmentAutoStop = true;  // stop automatically at t + clipDuration s
       }
       if (el('autoplay-cb').checked) v.play().catch(() => {});
     }, { once: true });
@@ -1579,7 +1616,7 @@ function updateMarkInfo() {
 
   state.markSlots.forEach((t, i) => {
     const start   = t ?? 0;
-    const end     = Math.min(start + 3, dur);
+    const end     = Math.min(start + state.clipDuration, dur);
     const isActive = i === state.activeSlot;
 
     const div = document.createElement('div');
@@ -1590,7 +1627,7 @@ function updateMarkInfo() {
     timeEl.className = 'slot-time' + (t == null ? ' unmarked' : '');
     timeEl.textContent = t != null
       ? `${fmt(start)} → ${fmt(end)}  (${(end - start).toFixed(2)}s)`
-      : `not marked → 0.00s → ${fmt(Math.min(3, dur))}`;
+      : `not marked → 0.00s → ${fmt(Math.min(state.clipDuration, dur))}`;
 
     const numEl = document.createElement('span');
     numEl.className = 'slot-num';
@@ -1626,7 +1663,7 @@ function updateMarkIndicator() {
   }
   const dur      = v.duration;
   const startPct = t / dur * 100;
-  const endPct   = Math.min(t + 3, dur) / dur * 100;
+  const endPct   = Math.min(t + state.clipDuration, dur) / dur * 100;
   ind.style.display  = 'block';
   ind.style.left     = `${startPct}%`;
   span.style.display = 'block';
@@ -1936,7 +1973,7 @@ function updateStats() {
     if (sel.enabled) totalSlots += 1 + (sel.extra_starts || []).length;
   }
   el('stat-count').textContent = totalSlots;
-  el('stat-dur').textContent   = (totalSlots * 3).toFixed(0);
+  el('stat-dur').textContent   = (totalSlots * state.clipDuration).toFixed(1);
   el('export-btn').disabled    = totalSlots === 0;
   updateMusicBar();
   // totalVideoDuration is called inside updateMusicBar already, update text
@@ -1950,8 +1987,8 @@ function updateStats() {
 }
 
 // ── Music bar ─────────────────────────────────────────────────────────────────
-// Scale: 1 tile = 3 seconds = 40px (36px tile + 4px gap)
-const PX_PER_3S = 36;  // = 1 clip tile width = 3s → 12px/sec, matches .q-item
+// Scale: 1 clip tile = PX_PER_3S px (36px); pxPerSec = PX_PER_3S / clipDuration
+const PX_PER_3S = 36;  // = 1 clip tile width in px; pxPerSec derived dynamically
 
 // Colours for tracks (hue offsets, distinct and soft)
 const MUSIC_HUES = [210, 30, 140, 280, 60, 170, 320, 90];
@@ -2032,7 +2069,7 @@ function totalVideoDuration() {
       lastDay = day;
       isFirstDay = false;
     }
-    totalSecs += 3 * (1 + (sel.extra_starts || []).length);
+    totalSecs += state.clipDuration * (1 + (sel.extra_starts || []).length);
   }
   return totalSecs;
 }
@@ -2040,8 +2077,8 @@ function totalVideoDuration() {
 function updateMusicBar() {
   if (!state.musicTracks.length) return;
 
-  // Scale: 1 clip tile = 3s = PX_PER_3S px → pxPerSec = PX_PER_3S / 3
-  const pxPerSec = PX_PER_3S / 3;
+  // Scale: 1 clip tile = clipDuration s = PX_PER_3S px → pxPerSec = PX_PER_3S / clipDuration
+  const pxPerSec = PX_PER_3S / state.clipDuration;
 
   let musicTotal = 0;
   state.musicTracks.forEach((track, i) => {
@@ -2121,7 +2158,7 @@ function videoBoundaries() {
       lastDay = day; isFirstDay = false;
     }
     const nSlots = 1 + (sel.extra_starts || []).length;
-    t += 3 * nSlots;
+    t += state.clipDuration * nSlots;
     boundaries.push(t);
   }
   t += 5;  // end card
@@ -2147,7 +2184,7 @@ function bindMusicDragHandle(handle, trackIdx) {
   handle.addEventListener('mousedown', e => {
     e.preventDefault();
     e.stopPropagation();
-    const pxPerSec = PX_PER_3S / 3;
+    const pxPerSec = PX_PER_3S / state.clipDuration;
     const snapTargets = videoBoundaries();  // cumulative seconds
 
     // Compute where this track's audio starts in the film timeline
@@ -2199,7 +2236,7 @@ function bindMusicDragHandleLeft(handle, trackIdx) {
   handle.addEventListener('mousedown', e => {
     e.preventDefault();
     e.stopPropagation();
-    const pxPerSec   = PX_PER_3S / 3;
+    const pxPerSec   = PX_PER_3S / state.clipDuration;
     const snapTargets = videoBoundaries();
 
     // Cumulative end of all previous tracks in the timeline
@@ -2399,6 +2436,16 @@ async function pollExport() {
   }
 }
 
+// ── Clip duration ─────────────────────────────────────────────────────────────
+async function setClipDuration(val) {
+  const dur = parseFloat(val);
+  if (!isFinite(dur) || dur <= 0) return;
+  state.clipDuration = dur;
+  await api('POST', '/api/clip_duration', { duration: dur }).catch(e => console.error('clip_duration save error:', e));
+  updateStats();
+  updateMusicBar();
+}
+
 // ── Select all / Clear all ────────────────────────────────────────────────────
 async function selectAll() {
   const promises = [];
@@ -2505,8 +2552,8 @@ function updateFramePreviews() {
   const dur  = clip.duration || 0;
   const t    = mark ?? 0;
   const tEnd = mark != null
-    ? Math.min(mark + 3, dur > 0 ? dur - 0.033 : mark + 3)  // mark set: show fragment end
-    : Math.min(3, dur > 0 ? dur - 0.033 : 3);               // no mark: show end of default 3s window
+    ? Math.min(mark + state.clipDuration, dur > 0 ? dur - 0.033 : mark + state.clipDuration)  // mark set: show fragment end
+    : Math.min(state.clipDuration, dur > 0 ? dur - 0.033 : state.clipDuration);               // no mark: show end of default clip window
   const enc = encodeURIComponent(clip.filename);
   const fmt = s => s.toFixed(1) + 's';
 
