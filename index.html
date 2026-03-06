@@ -3,7 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Clip Cutter</title>
+  <title>Reelpicker</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='4' fill='%230f0f0f'/%3E%3Crect x='3' y='13' width='26' height='16' rx='2' fill='%231a1a1a' stroke='%234488ff' stroke-width='1.5'/%3E%3Crect x='3' y='8' width='26' height='6' rx='2' fill='%234488ff'/%3E%3Crect x='7' y='8' width='2' height='6' fill='%230f0f0f'/%3E%3Crect x='13' y='8' width='2' height='6' fill='%230f0f0f'/%3E%3Crect x='19' y='8' width='2' height='6' fill='%230f0f0f'/%3E%3Crect x='25' y='8' width='2' height='6' fill='%230f0f0f'/%3E%3Cpolygon points='12,16 12,26 22,21' fill='%234488ff'/%3E%3C/svg%3E">
   <style>
     /* ── Reset & base ─────────────────────────────────────────── */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -808,7 +809,7 @@
 <!-- ── Folder loader overlay ───────────────────────────────────── -->
 <div id="overlay-loader" class="overlay">
   <div class="card">
-    <h1>&#127916; Clip Cutter</h1>
+    <h1>&#127916; Reelpicker</h1>
     <p>Tool for quick editing of vertical MP4 clips (9:16).</p>
     <label style="display:block; margin-bottom:4px; font-size:12px; color:var(--dim)">
       Path to folder with videos:
@@ -2821,7 +2822,7 @@ function checkClipSize(clip) {
 
 // ── Shutdown ──────────────────────────────────────────────────────────────────
 async function shutdownApp() {
-  if (!confirm('Close Clip Cutter and stop the server?')) return;
+  if (!confirm('Close Reelpicker and stop the server?')) return;
   try {
     await api('POST', '/api/shutdown', {});
   } catch(e) { /* expected – server closes */ }

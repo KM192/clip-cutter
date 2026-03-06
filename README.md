@@ -1,4 +1,4 @@
-# Clip Cutter
+# Reelpicker
 
 A local web application for quickly cutting vertical phone videos into a finished film.
 Browse clips in the browser, mark fragments, arrange cards and music — click **Export** to get a

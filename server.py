@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Clip Cutter - tool for quick editing of short video clips
+Reelpicker - tool for quick editing of short video clips
 
 Usage: python server.py [path/to/folder/with/videos]
   If folder is not provided, it can be selected in the UI.
